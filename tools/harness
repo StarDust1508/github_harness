@@ -298,6 +298,34 @@ function cmdDoctor(man) {
   const clash = skills.filter((s) => !s.error && reserved.includes(s.name))
   if (clash.length) { console.log(`\n${C.r}✗${C.x} имена затеняют встроенные команды: ${clash.map((s) => s.name).join(', ')}`); problems += clash.length }
 
+  // Политики: правила, а не измеряемые скиллы. Требуем валидный фронтматтер и
+  // совпадение имени с именем файла — иначе правило не найти и не сослаться на него.
+  const polDir = path.join(REPO, man.core_policies || 'core/policies')
+  const polFiles = []
+  const walkMd = (d) => {
+    if (!fs.existsSync(d)) return
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name)
+      if (e.isDirectory()) walkMd(p)
+      else if (e.name.endsWith('.md')) polFiles.push(p)
+    }
+  }
+  walkMd(polDir)
+  console.log(`\n${C.b}Политики${C.x} (${polFiles.length})`)
+  for (const p of polFiles.sort()) {
+    const text = fs.readFileSync(p, 'utf8')
+    const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+    const rel = path.relative(polDir, p)
+    if (!m) { console.log(`  ${C.r}✗${C.x} ${rel} — нет фронтматтера`); problems++; continue }
+    let meta
+    try { meta = parseYaml(m[1]) } catch (e) { console.log(`  ${C.r}✗${C.x} ${rel} — битый YAML: ${e.message}`); problems++; continue }
+    if (!meta.name || !meta.description) { console.log(`  ${C.r}✗${C.x} ${rel} — нужны name и description`); problems++; continue }
+    const expect = path.basename(p, '.md')
+    if (meta.name !== expect) { console.log(`  ${C.y}!${C.x} ${rel} — name «${meta.name}» не совпадает с именем файла`); warnings++ }
+    if (String(meta.description).length < 40) { console.log(`  ${C.y}!${C.x} ${rel} — описание короче 40 символов, модель не поймёт, когда применять`); warnings++ }
+  }
+  if (!problems) console.log(`  ${C.d}структура политик в порядке${C.x}`)
+
   console.log(`\n${C.b}Ссылки в инструментах${C.x}`)
   const st = loadState(man)
   for (const [id, rec] of Object.entries(st.tools || {})) {
