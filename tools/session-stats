@@ -1,0 +1,178 @@
+#!/usr/bin/env node
+/**
+ * session-stats — что происходило в сессиях агента, по фактам из журналов.
+ *
+ * Зачем: вопрос «почему агент плохо работает» обычно решается догадками.
+ * Журналы сессий содержат точный ответ, но читать их руками никто не станет.
+ * Этот инструмент даёт числа: сколько вызовов, где отказы, есть ли тренд.
+ *
+ * Зависимостей нет. Пути и раскладка журналов — от DeepSeek Harness; для другого
+ * инструмента нужен свой разбор (см. adapters/).
+ *
+ * Использование:
+ *   tools/session-stats                 все журналы
+ *   tools/session-stats --days 14       только за последние две недели
+ *   tools/session-stats --json          машинный вывод
+ */
+
+import fs from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+import { spawnSync } from 'node:child_process'
+
+const args = process.argv.slice(2)
+const asJson = args.includes('--json')
+const daysIdx = args.indexOf('--days')
+const days = daysIdx >= 0 ? Number(args[daysIdx + 1]) : null
+const HOME = os.homedir()
+const SESSIONS = path.join(HOME, '.dsh', 'sessions')
+
+if (!fs.existsSync(SESSIONS)) {
+  console.error(`нет каталога журналов: ${SESSIONS}`)
+  console.error('укажите другой инструмент — для него нужен свой разбор (см. adapters/)')
+  process.exit(1)
+}
+
+/**
+ * Распаковать журнал.
+ *
+ * Журнал — это СКЛЕЙКА независимых zstd-кадров, по одному на дозапись строки.
+ * Однократная распаковка встроенными средствами вернёт только первый кадр,
+ * то есть одну строку-заголовок, и вся статистика окажется нулевой.
+ * Поэтому только потоково, через внешний zstd.
+ */
+function readJournal(file) {
+  const r = spawnSync('zstd', ['-d', '-c', file], { maxBuffer: 1 << 30, encoding: 'utf8' })
+  if (r.error || !r.stdout) return null
+  return r.stdout.split('\n').filter(Boolean)
+}
+
+function journals() {
+  const out = []
+  for (const dir of fs.readdirSync(SESSIONS)) {
+    const projPath = path.join(SESSIONS, dir)
+    if (!fs.statSync(projPath).isDirectory()) continue
+    for (const sub of fs.readdirSync(projPath)) {
+      const sp = path.join(projPath, sub)
+      if (!fs.statSync(sp).isDirectory()) continue
+      for (const f of fs.readdirSync(sp)) {
+        if (f.startsWith('session') && f.endsWith('.jsonl.zstd')) out.push({ project: dir, file: path.join(sp, f) })
+      }
+    }
+  }
+  return out
+}
+
+const week = (ms) => {
+  const d = new Date(ms)
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+  t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7))
+  const y0 = new Date(Date.UTC(t.getUTCFullYear(), 0, 1))
+  return `${t.getUTCFullYear()}-W${String(Math.ceil(((t - y0) / 86400000 + 1) / 7)).padStart(2, '0')}`
+}
+
+const cutoff = days ? Date.now() - days * 86400000 : 0
+const files = journals()
+const buckets = new Map()
+let processed = 0
+
+for (const { project, file } of files) {
+  const lines = readJournal(file)
+  if (!lines) continue
+  let header = null
+  const events = []
+  for (const line of lines) {
+    let e
+    try { e = JSON.parse(line) } catch { continue }
+    if (e.type === 'session') { header = e; continue }
+    events.push(e)
+  }
+  if (!header) continue
+  const t = header.createdAt ?? events[0]?.time ?? 0
+  if (t < cutoff) continue
+  processed++
+
+  const key = week(t)
+  if (!buckets.has(key)) buckets.set(key, {
+    sessions: 0, parents: 0, subs: 0, turns: 0, calls: 0, errors: 0,
+    callsByTool: new Map(), errByTool: new Map(), retries: 0, retryCodes: new Map()
+  })
+  const b = buckets.get(key)
+  b.sessions++
+  ;((header.delegationDepth ?? 0) > 0 ? b.subs++ : b.parents++)
+
+  const callName = new Map()
+  for (const e of events) {
+    if (e.type === 'turn/start') b.turns++
+    else if (e.type === 'tool/call') {
+      const n = e.data?.name ?? '?'
+      b.calls++
+      b.callsByTool.set(n, (b.callsByTool.get(n) ?? 0) + 1)
+      if (e.data?.callId !== undefined) callName.set(String(e.data.callId), n)
+    } else if (e.type === 'tool/result') {
+      const blk = e.data?.message?.content?.[0]
+      if (!blk) continue
+      const text = (blk.content ?? []).map((c) => c.text ?? '').join('')
+      if (blk.isError === true || text.startsWith('Error:')) {
+        const n = callName.get(String(blk.toolCallId)) ?? '?'
+        b.errors++
+        b.errByTool.set(n, (b.errByTool.get(n) ?? 0) + 1)
+      }
+    } else if (e.type === 'llm/retry') {
+      b.retries++
+      const code = (JSON.stringify(e.data ?? {}).match(/"(EMPTY_RESPONSE|RATE_LIMIT|SERVER|TIMEOUT|TRANSPORT)"/) ?? [])[1] ?? 'other'
+      b.retryCodes.set(code, (b.retryCodes.get(code) ?? 0) + 1)
+    }
+  }
+}
+
+const rows = [...buckets.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))
+const pct = (n, d) => (d ? ((100 * n) / d).toFixed(2) + '%' : '—')
+
+if (asJson) {
+  console.log(JSON.stringify({
+    journalsScanned: files.length,
+    journalsInRange: processed,
+    weeks: rows.map(([k, b]) => ({
+      week: k, sessions: b.sessions, parents: b.parents, subs: b.subs, turns: b.turns,
+      calls: b.calls, errors: b.errors,
+      errorRate: b.calls ? Number(((100 * b.errors) / b.calls).toFixed(2)) : 0,
+      byTool: Object.fromEntries(b.errByTool)
+    }))
+  }, null, 2))
+  process.exit(0)
+}
+
+console.log(`Журналов найдено: ${files.length}${days ? `, в диапазоне последних ${days} дн.: ${processed}` : ''}\n`)
+if (!rows.length) { console.log('нет данных за указанный период'); process.exit(0) }
+
+console.log('| Неделя | Сессий | Ходов | Вызовов | Ошибок | Доля |')
+console.log('|---|---:|---:|---:|---:|---:|')
+for (const [k, b] of rows) {
+  console.log(`| ${k} | ${b.sessions} (${b.parents}/${b.subs}) | ${b.turns} | ${b.calls} | ${b.errors} | ${pct(b.errors, b.calls)} |`)
+}
+
+const totals = new Map()
+for (const [, b] of rows) for (const [n, c] of b.errByTool) totals.set(n, (totals.get(n) ?? 0) + c)
+const callTotals = new Map()
+for (const [, b] of rows) for (const [n, c] of b.callsByTool) callTotals.set(n, (callTotals.get(n) ?? 0) + c)
+
+console.log('\n**Отказы по инструментам** (доля считается внутри инструмента: общая доля обманывает, потому что редкий инструмент с частыми отказами тонет в массе вызовов):\n')
+console.log('| Инструмент | Ошибок | Вызовов | Доля |')
+console.log('|---|---:|---:|---:|')
+for (const [n, c] of [...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) {
+  console.log(`| \`${n}\` | ${c} | ${callTotals.get(n) ?? '?'} | ${pct(c, callTotals.get(n) ?? 0)} |`)
+}
+
+const retries = new Map()
+for (const [, b] of rows) for (const [c, n] of b.retryCodes) retries.set(c, (retries.get(c) ?? 0) + n)
+if (retries.size) {
+  console.log('\n**Повторы обращения к модели:**')
+  for (const [c, n] of [...retries.entries()].sort((a, b) => b[1] - a[1])) console.log(`- ${c}: ${n}`)
+}
+
+console.log('\nЧто смотреть дальше:')
+console.log('- рост доли отказов по неделям — регрессия обвязки, а не «модель стала хуже»;')
+console.log('- инструмент с двузначной долей отказов — искать причину в его контракте;')
+console.log('- повторы только с сетевыми кодами — проблема транспорта, не модели;')
+console.log('- подробный разбор: скилл agent-harness-audit.')
