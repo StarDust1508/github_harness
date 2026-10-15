@@ -634,10 +634,14 @@ function verdictOf(info) {
   return 'чисто'
 }
 
-function cmdScan(man, root) {
-  if (!root || root === 'all') die('укажите каталог: harness scan <каталог>')
+function cmdScan(man, root, docsMode) {
+  if (!root || root === 'all') die('укажите каталог: harness scan <каталог> [--docs]')
   const rootAbs = tilde(root)
   if (!fs.existsSync(rootAbs)) die(`нет такого каталога: ${rootAbs}`)
+
+  // Режим --docs: проверяем не скиллы, а обычные документы. Нужен при переносе
+  // playbook'ов и конспектов: они не являются скиллами, но утечь могут так же.
+  if (docsMode) return cmdScanDocs(rootAbs)
 
   const dirs = []
   const walk = (d) => {
@@ -676,6 +680,40 @@ function cmdScan(man, root) {
   }
   console.log(`${C.d}значения секретов не читались и не печатались — только имена шаблонов${C.x}`)
   console.log(`${C.d}переносить: harness import <путь>${C.x}`)
+}
+
+
+/** Разведка обычных документов: что можно переносить, что требует санитизации. */
+function cmdScanDocs(rootAbs) {
+  const files = walkFiles(rootAbs).filter((f) => f.endsWith('.md') || f.endsWith('.sh') || f.endsWith('.mjs') || f.endsWith('.js') || f.endsWith('.py'))
+  console.log(`${C.b}Разведка документов:${C.x} ${rootAbs.replace(os.homedir(), '~')}`)
+  console.log(`файлов: ${files.length}\n`)
+
+  const rows = []
+  for (const f of files) {
+    let text = ''
+    try { text = fs.readFileSync(f, 'utf8') } catch { continue }
+    const r = scanText(text)
+    const abs = /\/Users\/[A-Za-z0-9._-]+\//.test(text) || /\/home\/[A-Za-z0-9._-]+\//.test(text)
+    const verdict = r.suspected.length ? 'ОТКАЗ' : (r.personal.length || abs) ? 'санитизация' : r.placeholder.length ? 'примеры-ключей' : 'чисто'
+    rows.push({ f, verdict, why: r.suspected.join(', ') || r.personal.join(', ') || (abs ? 'абсолютный путь' : '') || r.placeholder.join(', ') })
+  }
+
+  const order = { 'ОТКАЗ': 0, 'санитизация': 1, 'примеры-ключей': 2, 'чисто': 3 }
+  rows.sort((a, b) => order[a.verdict] - order[b.verdict] || a.f.localeCompare(b.f))
+  const counts = {}
+  for (const r of rows) counts[r.verdict] = (counts[r.verdict] || 0) + 1
+  console.log(Object.entries(counts).map(([k, v]) => `${k}: ${v}`).join(' · ') + '\n')
+
+  for (const r of rows) {
+    if (r.verdict === 'чисто') continue
+    const color = r.verdict === 'ОТКАЗ' ? C.r : r.verdict === 'санитизация' ? C.y : C.d
+    console.log(`  ${color}${r.verdict}${C.x} ${r.f.replace(rootAbs, '.').replace(os.homedir(), '~')}`)
+    if (r.why) console.log(`         ${C.d}${r.why}${C.x}`)
+  }
+  const clean = rows.filter((r) => r.verdict === 'чисто')
+  console.log(`\n${C.g}чистых файлов: ${clean.length}${C.x} — их можно переносить как есть`)
+  console.log(`${C.d}значения секретов не читались и не печатались${C.x}`)
 }
 
 function cmdImport(man, src, dryRun) {
@@ -772,6 +810,53 @@ function cmdNew(man, name) {
   5. Проверить: harness doctor`)
 }
 
+
+/**
+ * Перенести отдельный документ (playbook или конспект) в соответствующей слой ядра.
+ *
+ * Отличие от скилла: у документа нет фронтматтера и нет замера — он не является
+ * процедурой с доказанной пользой. Поэтому проверка та же (секреты, пути),
+ * а слой выбирается явно: playbooks или knowledge.
+ */
+function cmdImportDoc(man, src, layer, dryRun) {
+  if (!src) die('укажите файл: harness import <файл.md> --doc --layer playbooks|knowledge')
+  const srcAbs = tilde(src)
+  if (!fs.existsSync(srcAbs) || !fs.statSync(srcAbs).isFile()) die(`нет такого файла: ${srcAbs}`)
+  if (!['playbooks', 'knowledge'].includes(layer)) die('--layer должен быть playbooks или knowledge')
+
+  const text = fs.readFileSync(srcAbs, 'utf8')
+  const r = scanText(text)
+  const base = path.basename(srcAbs)
+
+  console.log(`${C.b}Перенос документа:${C.x} ${base} → core/${layer}/`)
+  console.log(`  размер: ${(text.length / 1024).toFixed(0)} КБ`)
+
+  if (r.suspected.length) {
+    console.log(`\n${C.r}ОТКАЗ.${C.x} Похоже на настоящие секреты: ${r.suspected.join(', ')}`)
+    process.exit(2)
+  }
+  if (r.personal.length) console.log(`  ${C.y}санитизация:${C.x} ${r.personal.join(', ')}`)
+  if (r.placeholder.length) console.log(`  ${C.d}примеры-заглушки:${r.placeholder.join(', ')}${C.x}`)
+
+  const dest = path.join(REPO, 'core', layer, base)
+  if (fs.existsSync(dest)) {
+    console.log(`\n${C.y}Уже есть:${C.x} core/${layer}/${base} — не перезаписываю.`)
+    process.exit(3)
+  }
+  if (dryRun) {
+    console.log(`\n${C.b}--dry-run${C.x}: было бы записано в core/${layer}/${base}`)
+    return
+  }
+
+  // Обезличиваем домашние пути; остальное содержимое не трогаем.
+  const clean = sanitizeText(text)
+  fs.mkdirSync(path.dirname(dest), { recursive: true })
+  fs.writeFileSync(dest, clean)
+  const fixed = clean !== text ? ', пути обезличены' : ''
+  console.log(`\n${C.g}Перенесено${C.x} в core/${layer}/${base}${fixed}`)
+  console.log(`${C.d}проверить: harness verify && harness doctor${C.x}`)
+}
+
 // ─── Вход ───────────────────────────────────────────────────────────────────
 const [, , cmd = 'help', ...rest] = process.argv
 const includeCandidates = rest.includes('--candidates')
@@ -788,8 +873,15 @@ switch (cmd) {
   case 'inventory': cmdInventory(man); break
   case 'new': cmdNew(man, rest.find((a) => !a.startsWith('--'))); break
   case 'verify': cmdVerify(man); break
-  case 'scan': cmdScan(man, target); break
-  case 'import': cmdImport(man, rest.filter((a) => !a.startsWith('--'))[0], rest.includes('--dry-run')); break
+  case 'scan': cmdScan(man, target, rest.includes('--docs')); break
+  case 'import': {
+    const src = rest.filter((a) => !a.startsWith('--'))[0]
+    const idx = rest.indexOf('--layer')
+    const layer = idx >= 0 ? rest[idx + 1] : undefined
+    if (rest.includes('--doc')) cmdImportDoc(man, src, layer, rest.includes('--dry-run'))
+    else cmdImport(man, src, rest.includes('--dry-run'))
+    break
+  }
   default:
     console.log(`harness — обвязка агентов
 
@@ -804,6 +896,8 @@ switch (cmd) {
   harness new <имя>              создать заготовку скилла из шаблона
   harness verify                 самопроверка перед публикацией: секреты, пути, ссылки
   harness scan <каталог>         разведка: какие скиллы можно перенести
+       --docs                    проверять обычные документы, а не скиллы
   harness import <путь>          перенести скилл в ядро (--dry-run — только показать)
+  harness import <файл> --doc --layer <playbooks|knowledge>   перенести документ
 `)
 }
