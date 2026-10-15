@@ -84,6 +84,31 @@ function parseYaml(text) {
       throw new Error(`строка ${i + 1}: не разобрана → ${line.slice(0, 60)}`)
     }
     const [, key, valueRaw] = m
+    if (/^[|>][-+]?\d*$/.test(valueRaw.trim())) {
+      // Блок-скаляр: значение, записанное с новой строки с отступом. Это
+      // корректный YAML, и реальные парсеры его принимают — читаем текст,
+      // а не литерал «|», иначе описание выглядит пустым.
+      const folded = valueRaw.trim().startsWith('>')
+      const body = []
+      let j = i + 1
+      let blockIndent = null
+      for (; j < lines.length; j++) {
+        const l = lines[j]
+        if (l.trim() === '') { body.push(''); continue }
+        const ind = l.length - l.replace(/^\s*/, '').length
+        if (blockIndent === null) {
+          if (ind <= indent) break
+          blockIndent = ind
+        }
+        if (ind < blockIndent) break
+        body.push(l.slice(blockIndent))
+      }
+      while (body.length && body[body.length - 1] === '') body.pop()
+      parent[key] = folded ? body.join(' ').trim() : body.join('\n')
+      stack[stack.length - 1].lastKey = key
+      i = j - 1
+      continue
+    }
     if (valueRaw.trim() === '') {
       // Смотрим вперёд: список или словарь?
       let j = i + 1
@@ -322,7 +347,7 @@ function cmdDoctor(man) {
     const desc = String(s.meta.description || '')
     const issues = []
     if (desc.length < 60) issues.push('описание короче 60 символов')
-    if (!/(используй|применяй|когда|при |для |use when|when |применяется)/i.test(desc)) {
+    if (!/(используй|применяй|когда|при |для |если|всегда|use when|when |whenever|применяется)/i.test(desc)) {
       issues.push('нет условия применения — модель не поймёт, когда вызывать')
     }
     if (/(помогает с|полезн|разные задачи|various|helps with|general purpose)/i.test(desc)) {
