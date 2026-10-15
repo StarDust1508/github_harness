@@ -43,7 +43,7 @@ function parseScalar(raw) {
 function parseYaml(text) {
   const lines = text.split('\n')
   const root = {}
-  const stack = [{ indent: -1, node: root }]
+  const stack = [{ indent: -1, node: root, lastKey: null }]
 
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i]
@@ -57,13 +57,13 @@ function parseYaml(text) {
     if (line.startsWith('- ') || line === '-') {
       if (!Array.isArray(parent)) throw new Error(`строка ${i + 1}: элемент списка там, где ожидался словарь`)
       const rest = line.slice(2).trim()
-      if (rest === '') { const obj = {}; parent.push(obj); stack.push({ indent, node: obj }); continue }
+      if (rest === '') { const obj = {}; parent.push(obj); stack.push({ indent, node: obj, lastKey: null }); continue }
       const m = rest.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/)
       if (m) {
         const obj = {}
         obj[m[1]] = parseScalar(m[2])
         parent.push(obj)
-        stack.push({ indent, node: obj })
+        stack.push({ indent, node: obj, lastKey: null })
       } else {
         parent.push(parseScalar(rest))
       }
@@ -71,7 +71,18 @@ function parseYaml(text) {
     }
 
     const m = line.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/)
-    if (!m) throw new Error(`строка ${i + 1}: не разобрана → ${line.slice(0, 60)}`)
+    if (!m) {
+      // Многострочное значение: продолжение строки скаляра с отступом.
+      // Это корректный YAML (plain scalar), и реальные парсеры его принимают —
+      // поэтому считать такой файл битым нельзя.
+      const frame = stack[stack.length - 1]
+      const key = frame.lastKey
+      if (key && typeof frame.node[key] === 'string' && indent > frame.indent) {
+        frame.node[key] += ' ' + line
+        continue
+      }
+      throw new Error(`строка ${i + 1}: не разобрана → ${line.slice(0, 60)}`)
+    }
     const [, key, valueRaw] = m
     if (valueRaw.trim() === '') {
       // Смотрим вперёд: список или словарь?
@@ -80,9 +91,10 @@ function parseYaml(text) {
       const nextIsList = j < lines.length && lines[j].trim().startsWith('- ')
       const node = nextIsList ? [] : {}
       parent[key] = node
-      stack.push({ indent, node })
+      stack.push({ indent, node, lastKey: null })
     } else {
       parent[key] = parseScalar(valueRaw)
+      stack[stack.length - 1].lastKey = key
     }
   }
   return root
@@ -404,6 +416,222 @@ function cmdInventory(man) {
   console.log(JSON.stringify(out, null, 2))
 }
 
+// ─── Разведка и перенос скиллов ─────────────────────────────────────────────
+// Перенос в публичный репозиторий необратим, поэтому проверка идёт ДО копирования:
+// найденный секрет — отказ, а не «предупреждение в отчёте». Значения секретов
+// никогда не печатаются: только имя шаблона и имя файла.
+
+const SECRET_PATTERNS = [
+  ['ключ провайдера (sk-)', /\bsk-[A-Za-z0-9_-]{16,}/],
+  ['токен GitHub', /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/],
+  ['ключ AWS', /\bAKIA[0-9A-Z]{16}\b/],
+  ['ключ Google', /\bAIza[0-9A-Za-z_-]{30,}/],
+  ['токен Slack', /\bxox[baprs]-[A-Za-z0-9-]{10,}/],
+  ['токен Telegram-бота', /\b\d{8,12}:[A-Za-z0-9_-]{30,}\b/],
+  ['приватный ключ', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+  ['пароль в строке подключения', /\b[a-z]+:\/\/[^\s:@/]+:[^\s:@/]{6,}@/i],
+  ['секрет в конфиге', /^\s*(api[_-]?key|secret|token|password|passwd)\s*[:=]\s*["']?[A-Za-z0-9_\-./+]{16,}/im],
+]
+
+const PERSONAL_PATTERNS = [
+  ['абсолютный путь с именем пользователя', /\/Users\/[A-Za-z0-9._-]+\//],
+  ['домашний путь Linux', /\/home\/[A-Za-z0-9._-]+\//],
+  ['электронная почта', /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/],
+  ['телефон', /(?:\+7|\b8)[\s(-]?\d{3}[\s)-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/],
+  ['ID чата Telegram', /\b-?100\d{10,}\b/],
+]
+
+/** Энтропия Шеннона: отличает заглушку (`sk-xxxx…`) от настоящего ключа. */
+function entropy(s) {
+  const freq = {}
+  for (const ch of s) freq[ch] = (freq[ch] || 0) + 1
+  let h = 0
+  for (const k in freq) { const p = freq[k] / s.length; h -= p * Math.log2(p) }
+  return h
+}
+
+/**
+ * Просканировать текст.
+ *
+ * Совпадения делятся на две группы, потому что цена ошибки несимметрична:
+ *  - `suspected` — похоже на настоящий секрет (высокая энтропия): перенос запрещён;
+ *  - `placeholder` — низкая энтропия, то есть пример вида `sk-xxxx…`: перенос
+ *    разрешён, но помечается — иначе такие примеры будут вечно ловиться
+ *    сканерами секретов на GitHub.
+ * Значения не возвращаются и не печатаются — только метки шаблонов.
+ */
+function scanText(text) {
+  const out = { suspected: [], placeholder: [], personal: [] }
+  for (const [label, re] of SECRET_PATTERNS) {
+    const flags = re.flags.includes('g') ? re.flags : re.flags + 'g'
+    const found = [...text.matchAll(new RegExp(re.source, flags))]
+    if (!found.length) continue
+    let worst = 0
+    for (const m of found) {
+      const value = m.slice(1).find((g) => g && g.length > 8) || m[0]
+      worst = Math.max(worst, entropy(String(value)))
+    }
+    if (worst >= 3) out.suspected.push(label)
+    else out.placeholder.push(label)
+  }
+  for (const [label, re] of PERSONAL_PATTERNS) if (re.test(text)) out.personal.push(label)
+  return out
+}
+
+/** Обезличить текст: домашние пути → ~, значения секретов не трогаем (мы их не переносим). */
+function sanitizeText(text) {
+  return text
+    .replace(/\/Users\/[A-Za-z0-9._-]+\//g, '~/')
+    .replace(/\/home\/[A-Za-z0-9._-]+\//g, '~/')
+}
+
+function walkFiles(dir) {
+  const out = []
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (e.name === '.git' || e.name === 'node_modules') continue
+      const p = path.join(d, e.name)
+      if (e.isDirectory()) walk(p)
+      else out.push(p)
+    }
+  }
+  if (fs.existsSync(dir)) walk(dir)
+  return out
+}
+
+function inspectSkillDir(dir) {
+  const sk = readSkill(dir)
+  if (sk.error) return { dir, error: sk.error }
+  const files = walkFiles(dir)
+  const suspected = new Set(), placeholder = new Set(), personal = new Set()
+  let bytes = 0
+  for (const f of files) {
+    bytes += fs.statSync(f).size
+    if (bytes > 2 * 1024 * 1024) continue // крупные ресурсы не читаем построчно
+    let text = ''
+    try { text = fs.readFileSync(f, 'utf8') } catch { continue }
+    const r = scanText(text)
+    r.suspected.forEach((v) => suspected.add(v))
+    r.placeholder.forEach((v) => placeholder.add(v))
+    r.personal.forEach((v) => personal.add(v))
+  }
+  return {
+    dir, name: sk.name, status: sk.status, files: files.length, bytes,
+    suspected: [...suspected], placeholder: [...placeholder], personal: [...personal]
+  }
+}
+
+function verdictOf(info) {
+  if (info.error) return 'битый'
+  if (info.suspected.length) return 'ОТКАЗ'
+  if (info.personal.length) return 'санитизация'
+  if (info.placeholder.length) return 'примеры-ключей'
+  return 'чисто'
+}
+
+function cmdScan(man, root) {
+  if (!root || root === 'all') die('укажите каталог: harness scan <каталог>')
+  const rootAbs = tilde(root)
+  if (!fs.existsSync(rootAbs)) die(`нет такого каталога: ${rootAbs}`)
+
+  const dirs = []
+  const walk = (d) => {
+    if (fs.existsSync(path.join(d, 'SKILL.md'))) { dirs.push(d); return }
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (!e.isDirectory() || e.name === '.git' || e.name === 'node_modules') continue
+      if (e.name.startsWith('.')) continue // .archive, .hub, .removed_* — не действующие скиллы
+      walk(path.join(d, e.name))
+    }
+  }
+  walk(rootAbs)
+
+  console.log(`${C.b}Разведка:${C.x} ${rootAbs.replace(os.homedir(), '~')}`)
+  console.log(`найдено скиллов: ${dirs.length}\n`)
+
+  const infos = dirs.map(inspectSkillDir)
+  const byVerdict = { 'чисто': [], 'примеры-ключей': [], 'санитизация': [], 'ОТКАЗ': [], 'битый': [] }
+  for (const i of infos) byVerdict[verdictOf(i)].push(i)
+
+  for (const [v, list] of Object.entries(byVerdict)) {
+    if (!list.length) continue
+    const color = v === 'ОТКАЗ' ? C.r : v === 'чисто' ? C.g : C.y
+    console.log(`${color}${v}${C.x} — ${list.length}`)
+    for (const i of list.slice(0, 60)) {
+      const rel = i.dir.replace(os.homedir(), '~')
+      const why = i.error ? i.error
+        : i.suspected.length ? `ПОДОЗРЕНИЕ НА СЕКРЕТ: ${i.suspected.join(', ')}`
+        : i.personal.length ? `персональное: ${i.personal.join(', ')}`
+        : i.placeholder.length ? `примеры-заглушки: ${i.placeholder.join(', ')}`
+        : `${i.files} файлов, ${(i.bytes / 1024).toFixed(0)} КБ`
+      console.log(`  ${(i.name || path.basename(i.dir)).padEnd(34)} ${C.d}${why}${C.x}`)
+      if (i.name) console.log(`  ${' '.repeat(34)} ${C.d}${rel}${C.x}`)
+    }
+    if (list.length > 60) console.log(`  ${C.d}… и ещё ${list.length - 60}${C.x}`)
+    console.log('')
+  }
+  console.log(`${C.d}значения секретов не читались и не печатались — только имена шаблонов${C.x}`)
+  console.log(`${C.d}переносить: harness import <путь>${C.x}`)
+}
+
+function cmdImport(man, src, dryRun) {
+  if (!src) die('укажите путь к скиллу: harness import <путь> [--dry-run]')
+  const srcAbs = tilde(src)
+  if (!fs.existsSync(srcAbs)) die(`нет такого пути: ${srcAbs}`)
+  const info = inspectSkillDir(srcAbs)
+
+  console.log(`${C.b}Импорт:${C.x} ${srcAbs.replace(os.homedir(), '~')}`)
+  if (info.error) die(`скилл не годен: ${info.error}`)
+  console.log(`  имя:     ${info.name}`)
+  console.log(`  статус:  ${info.status}${info.status === 'candidate' ? ' (нет EVIDENCE.md — попадёт как кандидат)' : ''}`)
+  console.log(`  файлов:  ${info.files}, ${(info.bytes / 1024).toFixed(0)} КБ`)
+
+  if (info.suspected.length) {
+    console.log(`\n${C.r}ОТКАЗ.${C.x} Похоже на настоящие секреты: ${info.suspected.join(', ')}`)
+    console.log('Перенос в публичный репозиторий необратим — импорт остановлен.')
+    console.log(`${C.d}Ключ, попавший в файл, сначала отзывается, потом переносится содержимое.${C.x}`)
+    process.exit(2)
+  }
+  if (info.placeholder.length) {
+    console.log(`\n${C.d}Примеры-заглушки ключей (${info.placeholder.join(', ')}) — переносить можно, но лучше заменить на многоточие: сканеры секретов на них срабатывают.${C.x}`)
+  }
+  if (info.personal.length) {
+    console.log(`\n${C.y}Требуется санитизация:${C.x} ${info.personal.join(', ')}`)
+    console.log(`${C.d}Абсолютные пути будут заменены на ~. Остальные находки требуют внимания вручную.${C.x}`)
+  }
+
+  const dest = path.join(REPO, man.core_skills || 'core/skills', info.name)
+  if (fs.existsSync(dest)) {
+    console.log(`\n${C.y}Уже есть в ядре:${C.x} ${dest.replace(REPO, '.')} — импорт не перезаписывает.`)
+    console.log(`${C.d}Сравните вручную или удалите существующий каталог осознанно.${C.x}`)
+    process.exit(3)
+  }
+
+  if (dryRun) {
+    console.log(`\n${C.b}--dry-run${C.x}: было бы скопировано в ${dest.replace(REPO, '.')}`)
+    return
+  }
+
+  fs.mkdirSync(dest, { recursive: true })
+  let sanitized = 0
+  for (const f of walkFiles(srcAbs)) {
+    const rel = path.relative(srcAbs, f)
+    const target = path.join(dest, rel)
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    let text = null
+    try { text = fs.readFileSync(f, 'utf8') } catch { /* бинарный ресурс — копируем как есть */ }
+    if (text !== null) {
+      const clean = sanitizeText(text)
+      if (clean !== text) sanitized++
+      fs.writeFileSync(target, clean)
+    } else {
+      fs.copyFileSync(f, target)
+    }
+  }
+  console.log(`\n${C.g}Перенесено${C.x} в ${dest.replace(REPO, '.')}${sanitized ? `, файлов с обезличенными путями: ${sanitized}` : ''}`)
+  console.log(`${C.d}статус «кандидат»: без EVIDENCE.md скилл не устанавливается по умолчанию${C.x}`)
+  console.log(`${C.d}проверить: harness doctor${C.x}`)
+}
+
 // ─── Вход ───────────────────────────────────────────────────────────────────
 const [, , cmd = 'help', ...rest] = process.argv
 const includeCandidates = rest.includes('--candidates')
@@ -418,6 +646,8 @@ switch (cmd) {
   case 'update': cmdUpdate(man); break
   case 'prune': cmdPrune(man); break
   case 'inventory': cmdInventory(man); break
+  case 'scan': cmdScan(man, target); break
+  case 'import': cmdImport(man, rest.filter((a) => !a.startsWith('--'))[0], rest.includes('--dry-run')); break
   default:
     console.log(`harness — обвязка агентов
 
@@ -429,5 +659,7 @@ switch (cmd) {
   harness update                 пересоздать ссылки и обновить отпечатки
   harness prune                  убрать свои ссылки на исчезнувшие скиллы
   harness inventory              машинный отчёт об установленном
+  harness scan <каталог>         разведка: какие скиллы можно перенести
+  harness import <путь>          перенести скилл в ядро (--dry-run — только показать)
 `)
 }
