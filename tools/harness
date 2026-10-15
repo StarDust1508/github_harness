@@ -956,6 +956,108 @@ function cmdImportDoc(man, src, layer, dryRun) {
   console.log(`${C.d}проверить: harness verify && harness doctor${C.x}`)
 }
 
+
+/**
+ * Точка входа обвязки: короткий файл инструкций, который ведёт к остальному.
+ *
+ * Зачем: скиллы инструмент подхватывает сам, а правила поведения — нет. Без
+ * точки входа ядро лежит в репозитории мёртвым грузом: агент о нём не знает.
+ *
+ * Почему короткий: файл инструкций читается в КАЖДОЙ сессии и имеет бюджет
+ * (у DeepSeek Harness — 64 КБ, при превышении широкие файлы отбрасываются).
+ * Поэтому здесь только указатель: имя, назначение и куда идти за глубиной.
+ */
+function buildEntrypoint(man) {
+  const coreDir = path.join(REPO, 'core')
+  const readDir = (rel) => {
+    const dir = path.join(coreDir, rel)
+    if (!fs.existsSync(dir)) return []
+    const out = []
+    const walk = (d) => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const full = path.join(d, e.name)
+        if (e.isDirectory()) { walk(full); continue }
+        if (!e.name.endsWith('.md') || e.name === 'README.md') continue
+        const m = fs.readFileSync(full, 'utf8').match(/^---\r?\n([\s\S]*?)\r?\n---/)
+        let name = path.basename(e.name, '.md')
+        let desc = ''
+        if (m) {
+          try {
+            const meta = parseYaml(m[1])
+            if (meta.name) name = meta.name
+            if (meta.description) desc = String(meta.description)
+          } catch { /* описание необязательно для указателя */ }
+        }
+        out.push({ name, desc: desc.replace(/\s+/g, ' ').trim(), rel: path.relative(REPO, full) })
+      }
+    }
+    walk(dir)
+    return out
+  }
+
+  const policies = readDir('policies')
+  const playbooks = readDir('playbooks')
+  const knowledge = readDir('knowledge')
+
+  const line = (x) => `- \`${x.name}\`${x.desc ? ` — ${x.desc.split('. ')[0].replace(/\.$/, '')}` : ''}`
+
+  return `# Обвязка агента
+
+Ядро обвязки: \`${path.relative(os.homedir(), REPO) || REPO}\`.
+Правила, процедуры и знание читаются **по требованию**, а не загружаются целиком:
+у файла инструкций есть бюджет, и глубина в нём не помещается.
+
+## Правила — открывать по теме задачи
+
+${policies.map(line).join('\n')}
+
+## Процедуры и знание
+
+${playbooks.length ? playbooks.map(line).join('\n') : '- (пока пусто)'}
+${knowledge.length ? knowledge.map(line).join('\n') : ''}
+
+Скиллы (\`core/skills/\`) инструмент подхватывает сам — их описания видны заранее.
+
+## Проверка состояния
+
+\`\`\`sh
+tools/harness doctor     # целостность ядра и ссылок
+tools/harness verify     # перед публикацией: секреты, пути, ссылки
+tools/session-stats      # что происходило в сессиях агента
+\`\`\`
+
+Указатель по слоям: \`core/README.md\`.
+`
+}
+
+function cmdEntrypoint(man, write) {
+  const text = buildEntrypoint(man)
+  if (!write) { process.stdout.write(text); return }
+
+  let placed = 0, skipped = 0
+  for (const [id, t] of Object.entries(man.tools || {})) {
+    const found = hasCommand(t.detect_cmd) || [].concat(t.detect_dirs || []).map(tilde).some((d) => fs.existsSync(d))
+    if (!found) continue
+    for (const f of [].concat(t.instruction_files || [])) {
+      if (!f) continue
+      const abs = tilde(f)
+      if (fs.existsSync(abs)) {
+        // Чужой файл инструкций не перезаписывается никогда: он может содержать
+        // годы правил владельца. Показываем, что не тронули, и где наш вариант.
+        console.log(`  ${C.y}!${C.x} ${id}: ${f} уже существует — не трогаю`)
+        skipped++
+        continue
+      }
+      fs.mkdirSync(path.dirname(abs), { recursive: true })
+      fs.writeFileSync(abs, text)
+      console.log(`  ${C.g}✓${C.x} ${id}: точка входа записана в ${f} (${(text.length / 1024).toFixed(1)} КБ)`)
+      placed++
+    }
+  }
+  console.log(`\nзаписано: ${placed}, пропущено (файл занят): ${skipped}`)
+  if (skipped) console.log(`${C.d}Свой файл инструкций важнее нашего: слияние — решение владельца.${C.x}`)
+}
+
 // ─── Вход ───────────────────────────────────────────────────────────────────
 const [, , cmd = 'help', ...rest] = process.argv
 const includeCandidates = rest.includes('--candidates')
@@ -971,6 +1073,7 @@ switch (cmd) {
   case 'prune': cmdPrune(man); break
   case 'inventory': cmdInventory(man); break
   case 'new': cmdNew(man, rest.find((a) => !a.startsWith('--'))); break
+  case 'entrypoint': cmdEntrypoint(man, rest.includes('--write')); break
   case 'verify': cmdVerify(man); break
   case 'scan': cmdScan(man, target, rest.includes('--docs')); break
   case 'import': {
@@ -993,6 +1096,7 @@ switch (cmd) {
   harness prune                  убрать свои ссылки на исчезнувшие скиллы
   harness inventory              машинный отчёт об установленном
   harness new <имя>              создать заготовку скилла из шаблона
+  harness entrypoint [--write]   точка входа ядра для файла инструкций
   harness verify                 самопроверка перед публикацией: секреты, пути, ссылки
   harness scan <каталог>         разведка: какие скиллы можно перенести
        --docs                    проверять обычные документы, а не скиллы
