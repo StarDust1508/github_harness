@@ -116,9 +116,15 @@ if "$HARNESS" import "$CYR" --dry-run >/dev/null 2>&1; then bad "кирилли�
 head_ "11. Ссылки не ведут наружу"
 # Каждая созданная ссылка обязана вести либо в песочницу, либо в репозиторий.
 # Ссылка «куда-то ещё» означала бы, что установщик трогает чужие данные.
+# На macOS /tmp — это символьная ссылка на /private/tmp, поэтому один и тот же
+# путь приходит в двух видах. Сравнивать их напрямую нельзя: тест падал при
+# запуске из /tmp и проходил из домашнего каталога. CI на Linux молчал,
+# потому что там /private нет.
+norm() { case "$1" in /private/*) printf '%s' "${1#/private}" ;; *) printf '%s' "$1" ;; esac; }
+SANDBOX_N=$(norm "$SANDBOX"); REPO_N=$(norm "$REPO")
 BAD_LINKS=$(find "$SANDBOX" -type l 2>/dev/null | while read -r l; do
-  t=$(readlink "$l")
-  if [ "${t#"$SANDBOX"}" = "$t" ] && [ "${t#"$REPO"}" = "$t" ]; then echo "$l"; fi
+  t=$(norm "$(readlink "$l")")
+  if [ "${t#"$SANDBOX_N"}" = "$t" ] && [ "${t#"$REPO_N"}" = "$t" ]; then echo "$l"; fi
 done | wc -l | tr -d ' ')
 [ "$BAD_LINKS" = "0" ] && ok "все ссылки ведут внутрь песочницы или репозитория" || bad "есть ссылки наружу: $BAD_LINKS"
 
