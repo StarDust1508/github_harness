@@ -389,6 +389,42 @@ function cmdDoctor(man) {
     console.log(`  ${exists ? `${C.g}✓${C.x}` : `${C.y}?${C.x}`} ${p}${exists ? '' : ' — ещё не создан'}`)
   }
 
+  // Адаптеры против реальности.
+  //
+  // Манифест — это утверждение о том, как устроены инструменты. Утверждение,
+  // которое никто не проверяет, устаревает молча: инструмент меняет раскладку,
+  // а обвязка продолжает обещать несуществующее. Здесь объявленное сверяется
+  // с фактическим — там, где это вообще проверяемо.
+  console.log(`\n${C.b}Адаптеры против реальности${C.x}`)
+  for (const [id, t] of Object.entries(man.tools || {})) {
+    const foundCmd = hasCommand(t.detect_cmd)
+    const foundDir = [].concat(t.detect_dirs || []).map(tilde).some((d) => fs.existsSync(d))
+    if (!foundCmd && !foundDir) { console.log(`  ${C.d}·${C.x} ${id}: не установлен — пропущен`); continue }
+
+    const notes = []
+    for (const rs of [].concat(t.skill_roots || [])) {
+      if (!rs.path) continue
+      const abs = tilde(rs.path)
+      if (!fs.existsSync(abs)) { notes.push(`объявлен каталог скиллов ${rs.path} — его нет`); continue }
+      const rels = walkFiles(abs).filter((f) => f.endsWith('SKILL.md')).map((f) => path.relative(abs, f).split(path.sep).length)
+      const depth2 = rels.filter((n) => n === 2).length
+      const depth3 = rels.filter((n) => n === 3).length
+      if (rs.layout === 'flat' && depth3 > 0) notes.push(`${rs.path}: ${depth3} вложенных скиллов — раскладка flat их не увидит`)
+      if (rs.layout === 'nested' && depth3 === 0 && depth2 > 0) notes.push(`${rs.path}: скиллы лежат плоско — допустимо, обход рекурсивный`)
+    }
+    for (const f of [].concat(t.instruction_files || [])) {
+      if (f && !fs.existsSync(tilde(f))) notes.push(`объявлен файл инструкций ${f} — его нет`)
+    }
+    // Ожидаемые места: инструмент читает файл, только если он создан.
+    // Отсутствие — не расхождение, но полезно видеть, что обвязка туда ничего не кладёт.
+    for (const f of [].concat(t.instruction_files_optional || [])) {
+      if (f && !fs.existsSync(tilde(f))) console.log(`  ${C.d}·${C.x} ${id}: ${f} ещё не создан — обвязка его не создаёт`)
+    }
+
+    if (notes.length) for (const n of notes) { console.log(`  ${C.y}!${C.x} ${id}: ${n}`); warnings++ }
+    else console.log(`  ${C.g}✓${C.x} ${id}: объявленное соответствует фактическому`)
+  }
+
   console.log(`\n${C.b}Итог:${C.x} проблем ${problems}, предупреждений ${warnings}`)
   process.exit(problems ? 1 : 0)
 }
@@ -566,6 +602,12 @@ const SECRET_PATTERNS = [
 
 const PERSONAL_PATTERNS = [
   ['абсолютный путь с именем пользователя', /\/Users\/[A-Za-z0-9._-]+\//],
+  // Личная инфраструктура: адрес туннеля и имя узла в приватной сети — это
+  // не «просто ссылка». Публичный адрес туннеля плюс PIN даёт доступ к машине,
+  // а имя узла раскрывает устройство сети. Сканер обязан их видеть.
+  ['публичный адрес туннеля', /https?:\/\/[a-z0-9-]+\.ngrok(?:-free)?\.(?:dev|io|app)/i],
+  ['имя узла приватной сети', /[a-z0-9-]+\.tail[0-9a-f]{6,}\.ts\.net/i],
+  ['адрес в сети Tailscale', /\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/],
   ['домашний путь Linux', /\/home\/[A-Za-z0-9._-]+\//],
   ['электронная почта', /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/],
   ['телефон', /(?:\+7|\b8)[\s(-]?\d{3}[\s)-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/],
@@ -711,7 +753,9 @@ function cmdScan(man, root, docsMode) {
 
 /** Разведка обычных документов: что можно переносить, что требует санитизации. */
 function cmdScanDocs(rootAbs) {
-  const files = walkFiles(rootAbs).filter((f) => f.endsWith('.md') || f.endsWith('.sh') || f.endsWith('.mjs') || f.endsWith('.js') || f.endsWith('.py'))
+  // Корнем может быть и одиночный файл: проверять один документ — обычный случай.
+  const all = fs.statSync(rootAbs).isFile() ? [rootAbs] : walkFiles(rootAbs)
+  const files = all.filter((f) => f.endsWith('.md') || f.endsWith('.sh') || f.endsWith('.mjs') || f.endsWith('.js') || f.endsWith('.py'))
   console.log(`${C.b}Разведка документов:${C.x} ${rootAbs.replace(os.homedir(), '~')}`)
   console.log(`файлов: ${files.length}\n`)
 
@@ -848,13 +892,17 @@ function cmdImportDoc(man, src, layer, dryRun) {
   if (!src) die('укажите файл: harness import <файл.md> --doc --layer playbooks|knowledge')
   const srcAbs = tilde(src)
   if (!fs.existsSync(srcAbs) || !fs.statSync(srcAbs).isFile()) die(`нет такого файла: ${srcAbs}`)
-  if (!['playbooks', 'knowledge'].includes(layer)) die('--layer должен быть playbooks или knowledge')
+  // Слой выбирается явно: playbooks и knowledge — переносимое; путь в adapters/ —
+  // когда документ описывает конкретный деплой, а не общий случай.
+  const okLayer = ['playbooks', 'knowledge'].includes(layer) || /^adapters\/[a-z0-9-]+$/.test(layer || '')
+  if (!okLayer) die('--layer должен быть playbooks, knowledge или adapters/<инструмент>')
 
   const text = fs.readFileSync(srcAbs, 'utf8')
   const r = scanText(text)
   const base = path.basename(srcAbs)
 
-  console.log(`${C.b}Перенос документа:${C.x} ${base} → core/${layer}/`)
+  const layerDir = layer.startsWith('adapters/') ? layer : `core/${layer}`
+  console.log(`${C.b}Перенос документа:${C.x} ${base} → ${layerDir}/`)
   console.log(`  размер: ${(text.length / 1024).toFixed(0)} КБ`)
 
   if (r.suspected.length) {
@@ -864,13 +912,13 @@ function cmdImportDoc(man, src, layer, dryRun) {
   if (r.personal.length) console.log(`  ${C.y}санитизация:${C.x} ${r.personal.join(', ')}`)
   if (r.placeholder.length) console.log(`  ${C.d}примеры-заглушки:${r.placeholder.join(', ')}${C.x}`)
 
-  const dest = path.join(REPO, 'core', layer, base)
+  const dest = path.join(REPO, layerDir, base)
   if (fs.existsSync(dest)) {
-    console.log(`\n${C.y}Уже есть:${C.x} core/${layer}/${base} — не перезаписываю.`)
+    console.log(`\n${C.y}Уже есть:${C.x} ${layerDir}/${base} — не перезаписываю.`)
     process.exit(3)
   }
   if (dryRun) {
-    console.log(`\n${C.b}--dry-run${C.x}: было бы записано в core/${layer}/${base}`)
+    console.log(`\n${C.b}--dry-run${C.x}: было бы записано в ${layerDir}/${base}`)
     return
   }
 
@@ -879,7 +927,7 @@ function cmdImportDoc(man, src, layer, dryRun) {
   fs.mkdirSync(path.dirname(dest), { recursive: true })
   fs.writeFileSync(dest, clean)
   const fixed = clean !== text ? ', пути обезличены' : ''
-  console.log(`\n${C.g}Перенесено${C.x} в core/${layer}/${base}${fixed}`)
+  console.log(`\n${C.g}Перенесено${C.x} в ${layerDir}/${base}${fixed}`)
   console.log(`${C.d}проверить: harness verify && harness doctor${C.x}`)
 }
 
