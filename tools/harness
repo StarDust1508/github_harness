@@ -369,6 +369,42 @@ function cmdDoctor(man) {
     console.log(`  ${exists ? `${C.g}✓${C.x}` : `${C.y}?${C.x}`} ${p}${exists ? '' : ' — ещё не создан'}`)
   }
 
+  // Адаптеры против реальности.
+  //
+  // Манифест — это утверждение о том, как устроены инструменты. Утверждение,
+  // которое никто не проверяет, устаревает молча: инструмент меняет раскладку,
+  // а обвязка продолжает обещать несуществующее. Здесь объявленное сверяется
+  // с фактическим — там, где это вообще проверяемо.
+  console.log(`\n${C.b}Адаптеры против реальности${C.x}`)
+  for (const [id, t] of Object.entries(man.tools || {})) {
+    const foundCmd = hasCommand(t.detect_cmd)
+    const foundDir = [].concat(t.detect_dirs || []).map(tilde).some((d) => fs.existsSync(d))
+    if (!foundCmd && !foundDir) { console.log(`  ${C.d}·${C.x} ${id}: не установлен — пропущен`); continue }
+
+    const notes = []
+    for (const rs of [].concat(t.skill_roots || [])) {
+      if (!rs.path) continue
+      const abs = tilde(rs.path)
+      if (!fs.existsSync(abs)) { notes.push(`объявлен каталог скиллов ${rs.path} — его нет`); continue }
+      const rels = walkFiles(abs).filter((f) => f.endsWith('SKILL.md')).map((f) => path.relative(abs, f).split(path.sep).length)
+      const depth2 = rels.filter((n) => n === 2).length
+      const depth3 = rels.filter((n) => n === 3).length
+      if (rs.layout === 'flat' && depth3 > 0) notes.push(`${rs.path}: ${depth3} вложенных скиллов — раскладка flat их не увидит`)
+      if (rs.layout === 'nested' && depth3 === 0 && depth2 > 0) notes.push(`${rs.path}: скиллы лежат плоско — допустимо, обход рекурсивный`)
+    }
+    for (const f of [].concat(t.instruction_files || [])) {
+      if (f && !fs.existsSync(tilde(f))) notes.push(`объявлен файл инструкций ${f} — его нет`)
+    }
+    // Ожидаемые места: инструмент читает файл, только если он создан.
+    // Отсутствие — не расхождение, но полезно видеть, что обвязка туда ничего не кладёт.
+    for (const f of [].concat(t.instruction_files_optional || [])) {
+      if (f && !fs.existsSync(tilde(f))) console.log(`  ${C.d}·${C.x} ${id}: ${f} ещё не создан — обвязка его не создаёт`)
+    }
+
+    if (notes.length) for (const n of notes) { console.log(`  ${C.y}!${C.x} ${id}: ${n}`); warnings++ }
+    else console.log(`  ${C.g}✓${C.x} ${id}: объявленное соответствует фактическому`)
+  }
+
   console.log(`\n${C.b}Итог:${C.x} проблем ${problems}, предупреждений ${warnings}`)
   process.exit(problems ? 1 : 0)
 }

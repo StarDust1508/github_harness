@@ -31,7 +31,9 @@ shared_skills_root: ~/.agents/skills
 #   skill_roots  — список словарей: path / layout / managed / rank
 #                  layout: flat (DeepSeek Harness), nested (Hermes), agents (общая)
 #                  managed: false — родной каталог инструмента, чистим только свои ссылки
-#   instruction_files — файлы инструкций инструмента
+#   instruction_files          — файлы инструкций, существование которых проверяется
+#   instruction_files_optional — ожидаемые места, которых может ещё не быть
+#                                (инструмент читает файл, только если он создан)
 #   priority     — порядок установки (меньше — раньше)
 
 tools:
@@ -90,8 +92,8 @@ tools:
     detect_dirs: ~/.config/opencode
     priority: 5
     skill_roots: []
-    instruction_files: ~/.config/opencode/AGENTS.md
-    notes: Каталог скиллов не подтверждён — адаптер заготовкой.
+    instruction_files_optional: ~/.config/opencode/AGENTS.md
+    notes: Каталог скиллов не подтверждён — адаптер заготовкой. Файла инструкций на машине нет: место ожидаемое.
 
   claude-code:
     title: Claude Code
