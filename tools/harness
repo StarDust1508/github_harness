@@ -504,9 +504,15 @@ function cmdVerify(man) {
   let brokenLinks = 0
   for (const rel of tracked.filter((f) => f.endsWith('.md'))) {
     const text = fs.readFileSync(path.join(REPO, rel), 'utf8')
-    for (const m of text.matchAll(/\]\((?!https?:|#)([^)]+)\)/g)) {
-      const target = path.join(REPO, path.dirname(rel), m[1].split('#')[0])
-      if (!fs.existsSync(target)) { console.log(`  ${C.r}✗${C.x} ${rel} → ${m[1]}`); brokenLinks++ }
+    for (const m of text.matchAll(/\]\((?!https?:|mailto:|#)([^)]+)\)/g)) {
+      const raw = m[1].trim()
+      // В документации ссылки бывают шаблонами: `{output-dir}/NN-{type}.png`,
+      // `DIRECT_URL`. Это не битые ссылки, а примеры — проверять их нечем.
+      if (/[{}$<>*]/.test(raw)) continue
+      if (/^[A-Z][A-Z0-9_]*$/.test(raw)) continue
+      if (/\s/.test(raw)) continue
+      const target = path.join(REPO, path.dirname(rel), raw.split('#')[0])
+      if (!fs.existsSync(target)) { console.log(`  ${C.r}✗${C.x} ${rel} → ${raw}`); brokenLinks++ }
     }
   }
   if (brokenLinks) problems += brokenLinks
