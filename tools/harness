@@ -727,7 +727,9 @@ function cmdScan(man, root, docsMode) {
 
 /** Разведка обычных документов: что можно переносить, что требует санитизации. */
 function cmdScanDocs(rootAbs) {
-  const files = walkFiles(rootAbs).filter((f) => f.endsWith('.md') || f.endsWith('.sh') || f.endsWith('.mjs') || f.endsWith('.js') || f.endsWith('.py'))
+  // Корнем может быть и одиночный файл: проверять один документ — обычный случай.
+  const all = fs.statSync(rootAbs).isFile() ? [rootAbs] : walkFiles(rootAbs)
+  const files = all.filter((f) => f.endsWith('.md') || f.endsWith('.sh') || f.endsWith('.mjs') || f.endsWith('.js') || f.endsWith('.py'))
   console.log(`${C.b}Разведка документов:${C.x} ${rootAbs.replace(os.homedir(), '~')}`)
   console.log(`файлов: ${files.length}\n`)
 
@@ -864,13 +866,17 @@ function cmdImportDoc(man, src, layer, dryRun) {
   if (!src) die('укажите файл: harness import <файл.md> --doc --layer playbooks|knowledge')
   const srcAbs = tilde(src)
   if (!fs.existsSync(srcAbs) || !fs.statSync(srcAbs).isFile()) die(`нет такого файла: ${srcAbs}`)
-  if (!['playbooks', 'knowledge'].includes(layer)) die('--layer должен быть playbooks или knowledge')
+  // Слой выбирается явно: playbooks и knowledge — переносимое; путь в adapters/ —
+  // когда документ описывает конкретный деплой, а не общий случай.
+  const okLayer = ['playbooks', 'knowledge'].includes(layer) || /^adapters\/[a-z0-9-]+$/.test(layer || '')
+  if (!okLayer) die('--layer должен быть playbooks, knowledge или adapters/<инструмент>')
 
   const text = fs.readFileSync(srcAbs, 'utf8')
   const r = scanText(text)
   const base = path.basename(srcAbs)
 
-  console.log(`${C.b}Перенос документа:${C.x} ${base} → core/${layer}/`)
+  const layerDir = layer.startsWith('adapters/') ? layer : `core/${layer}`
+  console.log(`${C.b}Перенос документа:${C.x} ${base} → ${layerDir}/`)
   console.log(`  размер: ${(text.length / 1024).toFixed(0)} КБ`)
 
   if (r.suspected.length) {
@@ -880,13 +886,13 @@ function cmdImportDoc(man, src, layer, dryRun) {
   if (r.personal.length) console.log(`  ${C.y}санитизация:${C.x} ${r.personal.join(', ')}`)
   if (r.placeholder.length) console.log(`  ${C.d}примеры-заглушки:${r.placeholder.join(', ')}${C.x}`)
 
-  const dest = path.join(REPO, 'core', layer, base)
+  const dest = path.join(REPO, layerDir, base)
   if (fs.existsSync(dest)) {
-    console.log(`\n${C.y}Уже есть:${C.x} core/${layer}/${base} — не перезаписываю.`)
+    console.log(`\n${C.y}Уже есть:${C.x} ${layerDir}/${base} — не перезаписываю.`)
     process.exit(3)
   }
   if (dryRun) {
-    console.log(`\n${C.b}--dry-run${C.x}: было бы записано в core/${layer}/${base}`)
+    console.log(`\n${C.b}--dry-run${C.x}: было бы записано в ${layerDir}/${base}`)
     return
   }
 
@@ -895,7 +901,7 @@ function cmdImportDoc(man, src, layer, dryRun) {
   fs.mkdirSync(path.dirname(dest), { recursive: true })
   fs.writeFileSync(dest, clean)
   const fixed = clean !== text ? ', пути обезличены' : ''
-  console.log(`\n${C.g}Перенесено${C.x} в core/${layer}/${base}${fixed}`)
+  console.log(`\n${C.g}Перенесено${C.x} в ${layerDir}/${base}${fixed}`)
   console.log(`${C.d}проверить: harness verify && harness doctor${C.x}`)
 }
 
