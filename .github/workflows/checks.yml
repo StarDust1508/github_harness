@@ -1,0 +1,43 @@
+# Проверки обвязки на каждый push и pull request.
+#
+# Смысл: репозиторий публичный, а механизм работает с файлами. Значит проверки
+# должны выполняться не «когда вспомнили», а на каждом изменении. Локально то же
+# самое делает pre-commit — CI страхует случай `--no-verify` и правки через веб.
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Самопроверка репозитория
+        run: ./tools/harness verify
+
+      - name: Целостность ядра
+        run: ./tools/harness doctor
+
+      - name: Развёртывание на чистой машине
+        # Главное обещание обвязки: на новой машине всё поднимается одной
+        # командой. Проверяем это в чистом окружении, а не на словах.
+        run: |
+          rm -rf "$HOME/.agents" "$HOME/.dsh" "$HOME/.hermes" "$HOME/.harness"
+          mkdir -p "$HOME/.dsh"
+          HARNESS_YES=1 ./tools/bootstrap
+
+      - name: Скиллы не затеняют встроенные команды
+        run: |
+          if ./tools/harness doctor | grep -q 'затеняют встроенные'; then
+            echo "скилл затеняет встроенную команду"; exit 1
+          fi
+          echo "коллизий имён нет"

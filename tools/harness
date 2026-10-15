@@ -18,7 +18,7 @@ import path from 'node:path'
 import os from 'node:os'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO = path.resolve(HERE, '..')
@@ -416,6 +416,103 @@ function cmdInventory(man) {
   console.log(JSON.stringify(out, null, 2))
 }
 
+/**
+ * Самопроверка репозитория перед публикацией.
+ *
+ * Отвечает на один вопрос: можно ли этот коммит показывать. Публикация
+ * необратима — удалённый коммит остаётся в форках, кэшах и сторонних архивах,
+ * поэтому проверка идёт ДО коммита, а не после.
+ *
+ * Проверяется только то, что реально попадёт в репозиторий (git ls-files),
+ * а не рабочая копия целиком.
+ */
+function cmdVerify(man) {
+  let problems = 0, warnings = 0
+  console.log(`${C.b}Самопроверка репозитория${C.x}\n`)
+
+  let tracked
+  try {
+    tracked = execFileSync('git', ['-C', REPO, 'ls-files'], { encoding: 'utf8' }).split('\n').filter(Boolean)
+  } catch {
+    die('это не git-репозиторий — самопроверка невозможна')
+  }
+  console.log(`файлов под контролем версий: ${tracked.length}\n`)
+
+  // 1. Секреты в отслеживаемых файлах.
+  console.log(`${C.b}1. Секреты в файлах${C.x}`)
+  const secretHits = []
+  for (const rel of tracked) {
+    const abs = path.join(REPO, rel)
+    let text
+    try { text = fs.readFileSync(abs, 'utf8') } catch { continue }
+    const r = scanText(text)
+    if (r.suspected.length) secretHits.push({ rel, what: r.suspected })
+    else if (r.placeholder.length) { warnings++; console.log(`  ${C.d}·${C.x} ${rel} — примеры-заглушки: ${r.placeholder.join(', ')}`) }
+  }
+  if (secretHits.length) {
+    for (const h of secretHits) console.log(`  ${C.r}✗${C.x} ${h.rel} — ${h.what.join(', ')}`)
+    problems += secretHits.length
+  } else console.log(`  ${C.g}✓${C.x} секретов не найдено`)
+
+  // 2. Абсолютные пути с именем пользователя: утекает имя и структура дома.
+  console.log(`\n${C.b}2. Абсолютные пути${C.x}`)
+  const pathHits = []
+  for (const rel of tracked) {
+    if (rel === 'tools/harness') continue // в самом инструменте шаблоны путей — часть логики
+    const abs = path.join(REPO, rel)
+    let text
+    try { text = fs.readFileSync(abs, 'utf8') } catch { continue }
+    if (/\/Users\/[A-Za-z0-9._-]+\/(?!\s|$)/.test(text) || /\/home\/[A-Za-z0-9._-]+\//.test(text)) pathHits.push(rel)
+  }
+  if (pathHits.length) {
+    for (const rel of pathHits) console.log(`  ${C.y}!${C.x} ${rel} — абсолютный путь; заменяется на ~ при импорте`)
+    warnings += pathHits.length
+  } else console.log(`  ${C.g}✓${C.x} абсолютных путей нет`)
+
+  // 3. Защита .gitignore — проверяется САМИМ git, а не поиском подстроки:
+  // интересует результат («этот путь игнорируется»), а не то, как записано правило.
+  console.log(`\n${C.b}3. Защита .gitignore${C.x}`)
+  const mustBeIgnored = [
+    '.env', '.env.local', 'credentials.yaml', '.dsh/.credentials.yaml',
+    'secrets.token', 'server.key', 'auth.json', 'oauth_creds.json',
+    'sessions/session.v3.jsonl.zstd', 'attachments/file.png',
+    'state.db', 'logs/agent.log', 'backup/settings.yaml.bak',
+    'id_rsa', 'service-account.json', 'node_modules/pkg/index.js'
+  ]
+  const unprotected = []
+  for (const rel of mustBeIgnored) {
+    const r = spawnSync('git', ['-C', REPO, 'check-ignore', '-q', '--', rel])
+    if (r.status !== 0) unprotected.push(rel)
+  }
+  if (unprotected.length) {
+    for (const rel of unprotected) console.log(`  ${C.r}✗${C.x} не защищено: ${rel}`)
+    problems += unprotected.length
+  } else {
+    console.log(`  ${C.g}✓${C.x} все ${mustBeIgnored.length} чувствительных путей игнорируются`)
+  }
+
+  // 4. Целостность ядра: ссылки в документах ведут на существующие файлы.
+  console.log(`\n${C.b}4. Ссылки в документах${C.x}`)
+  let brokenLinks = 0
+  for (const rel of tracked.filter((f) => f.endsWith('.md'))) {
+    const text = fs.readFileSync(path.join(REPO, rel), 'utf8')
+    for (const m of text.matchAll(/\]\((?!https?:|#)([^)]+)\)/g)) {
+      const target = path.join(REPO, path.dirname(rel), m[1].split('#')[0])
+      if (!fs.existsSync(target)) { console.log(`  ${C.r}✗${C.x} ${rel} → ${m[1]}`); brokenLinks++ }
+    }
+  }
+  if (brokenLinks) problems += brokenLinks
+  else console.log(`  ${C.g}✓${C.x} битых ссылок нет`)
+
+  console.log(`\n${C.b}Итог:${C.x} проблем ${problems}, предупреждений ${warnings}`)
+  if (problems) {
+    console.log(`${C.r}Публиковать этот коммит нельзя.${C.x} Сначала устранить проблемы выше.`)
+    process.exit(1)
+  }
+  console.log(`${C.g}Коммит можно публиковать.${C.x}`)
+}
+
+
 // ─── Разведка и перенос скиллов ─────────────────────────────────────────────
 // Перенос в публичный репозиторий необратим, поэтому проверка идёт ДО копирования:
 // найденный секрет — отказ, а не «предупреждение в отчёте». Значения секретов
@@ -646,6 +743,7 @@ switch (cmd) {
   case 'update': cmdUpdate(man); break
   case 'prune': cmdPrune(man); break
   case 'inventory': cmdInventory(man); break
+  case 'verify': cmdVerify(man); break
   case 'scan': cmdScan(man, target); break
   case 'import': cmdImport(man, rest.filter((a) => !a.startsWith('--'))[0], rest.includes('--dry-run')); break
   default:
@@ -659,6 +757,7 @@ switch (cmd) {
   harness update                 пересоздать ссылки и обновить отпечатки
   harness prune                  убрать свои ссылки на исчезнувшие скиллы
   harness inventory              машинный отчёт об установленном
+  harness verify                 самопроверка перед публикацией: секреты, пути, ссылки
   harness scan <каталог>         разведка: какие скиллы можно перенести
   harness import <путь>          перенести скилл в ядро (--dry-run — только показать)
 `)

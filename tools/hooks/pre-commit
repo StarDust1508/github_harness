@@ -1,0 +1,36 @@
+#!/bin/sh
+# pre-commit — не пустить в историю то, что нельзя публиковать.
+#
+# Публикация необратима: удалённый коммит остаётся в reflog, форках, кэшах
+# и сторонних архивах. Поэтому проверка стоит ЗДЕСЬ, а не после.
+#
+# Установка:
+#   git config core.hooksPath tools/hooks
+# Обход (только осознанно):
+#   git commit --no-verify
+
+set -eu
+HERE=$(cd "$(dirname "$0")" && pwd)
+REPO=$(dirname "$(dirname "$HERE")")
+
+fail=0
+
+if ! "$REPO/tools/harness" verify; then
+  fail=1
+fi
+
+echo ""
+if ! "$REPO/tools/harness" doctor >/dev/null 2>&1; then
+  echo "доктор нашёл проблемы в ядре:"
+  "$REPO/tools/harness" doctor | tail -20
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "Коммит остановлен. Разберитесь с проблемами выше."
+  echo "Обойти осознанно: git commit --no-verify"
+  exit 1
+fi
+
+echo "Проверки пройдены."
