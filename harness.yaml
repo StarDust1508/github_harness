@@ -1,0 +1,107 @@
+# harness.yaml — единственный манифест обвязки.
+#
+# Формат намеренно ОГРАНИЧЕН (см. ARCHITECTURE.md, «Формат манифеста»):
+# только вложенные словари по отступам, списки через «- » и простые скаляры.
+# Никаких inline-массивов, якорей и блочных скаляров — чтобы разбор не зависел
+# от внешних библиотек (PyYAML на машине нет, а тащить зависимость ради манифеста
+# в обвязку, которая должна разворачиваться на голой машине, неправильно).
+#
+# Пути пишутся с ~ и раскрываются установщиком. Секретов здесь нет и быть не может.
+
+version: 1
+
+core_skills: core/skills
+core_policies: core/policies
+core_playbooks: core/playbooks
+core_knowledge: core/knowledge
+
+state_path: ~/.harness/state.json
+backup_dir: ~/.harness/backup
+
+# ── Общая точка встречи инструментов ────────────────────────────────────────
+# DeepSeek Harness 0.2+ читает ~/.agents/skills нативно (DSH_AGENTS_HOME),
+# та же конвенция у bb. Сюда ставится всё ядро; адаптеры добавляют ссылки у себя.
+shared_skills_root: ~/.agents/skills
+
+# ── Инструменты ─────────────────────────────────────────────────────────────
+# Поля:
+#   title        — человекочитаемое имя
+#   detect_cmd   — команда, наличие которой означает «инструмент есть»
+#   detect_dirs  — каталоги, наличие которых означает «инструмент есть»
+#   skill_roots  — список словарей: path / layout / managed / rank
+#                  layout: flat (DeepSeek Harness), nested (Hermes), agents (общая)
+#                  managed: false — родной каталог инструмента, чистим только свои ссылки
+#   instruction_files — файлы инструкций инструмента
+#   priority     — порядок установки (меньше — раньше)
+
+tools:
+
+  deepseek-harness:
+    title: DeepSeek Harness
+    detect_cmd: dsh
+    detect_dirs: ~/.dsh
+    priority: 1
+    skill_roots:
+      - path: ~/.agents/skills
+        layout: agents
+        managed: true
+        rank: 500
+      - path: ~/.dsh/skills
+        layout: flat
+        managed: false
+        rank: 400
+    instruction_files: ~/.dsh/AGENTS.md
+    notes: Плоский список скиллов, вложенность не поддерживается. Бюджет инструкций 64 КБ.
+
+  hermes:
+    title: Hermes
+    detect_cmd: ""
+    detect_dirs: ~/.hermes
+    priority: 2
+    skill_roots:
+      - path: ~/.hermes/skills
+        layout: nested
+        managed: false
+        rank: 100
+    instruction_files: ~/.hermes/SOUL.md
+    notes: Ожидает категорию в пути. Есть собственный skills_hub и аудит скиллов.
+
+  codex:
+    title: Codex
+    detect_cmd: codex
+    detect_dirs: ~/.codex
+    priority: 3
+    skill_roots: []
+    instruction_files: ~/.codex/AGENTS.md
+    notes: На машине остался только конфиг; адаптер готов на случай установки CLI.
+
+  gemini-cli:
+    title: Gemini CLI
+    detect_cmd: gemini
+    detect_dirs: ~/.gemini
+    priority: 4
+    skill_roots: []
+    instruction_files: ~/.gemini/GEMINI.md
+    notes: Каталога скиллов у инструмента нет; инструкции читает из GEMINI.md.
+
+  opencode:
+    title: OpenCode
+    detect_cmd: opencode
+    detect_dirs: ~/.config/opencode
+    priority: 5
+    skill_roots: []
+    instruction_files: ~/.config/opencode/AGENTS.md
+    notes: Каталог скиллов не подтверждён — адаптер заготовкой.
+
+  claude-code:
+    title: Claude Code
+    detect_cmd: claude
+    detect_dirs: ~/.claude
+    priority: 6
+    skill_roots:
+      - path: ~/.claude/skills
+        layout: flat
+        managed: true
+        rank: 100
+    instruction_files: ~/.claude/CLAUDE.md
+    notes: CLI не установлен. Правила из ~/Desktop/Claude написаны под @-импорты — DSH их не раскрывает.

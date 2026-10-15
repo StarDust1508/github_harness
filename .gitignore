@@ -1,0 +1,93 @@
+# .gitignore — обвязка агентов
+#
+# Правило одно: в этот репозиторий попадает только то, что можно показать.
+# Репозиторий публичный, и удалённый коммит не отзывается: он остаётся в reflog,
+# в форках, в кэше GitHub и в сторонних архивах. Поэтому «на всякий случай
+# исключить» здесь дешевле, чем «потом вычистить».
+
+# ── секреты и ключницы ────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.credentials*
+!credentials.example.yaml
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+service-account*.json
+token.json
+auth.json
+oauth_creds.json
+google_accounts.json
+*secret*
+!*secrets.example*
+
+# ── состояние и кэши агентов ──────────────────────────────────────────
+# Журналы сессий — это личная переписка, вложения и транскрипты инструментов.
+sessions/
+history/
+attachments/
+storages/
+cache/
+logs/
+*.jsonl
+*.jsonl.zstd
+*.jsonl.gz
+state.db
+state.db-*
+*.malformed*
+chromadb_data/
+audio_cache/
+checkpoints/
+backups/
+*.bak
+*.bak-*
+*.backup
+*.orig
+*.log
+!docs/**/*.log.md
+
+# ── локальные конфиги, производные от секретов ────────────────────────
+settings.yaml
+settings.yaml.imported
+config.yaml
+config.local.*
+*.local.yaml
+*.local.yml
+mcp.json
+*credential*
+*password*
+
+# ── тяжёлое и воспроизводимое ─────────────────────────────────────────
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+dist/
+build/
+target/
+*.tgz
+*.zip
+*.dmg
+.vendor/
+vendor/**/node_modules/
+
+# ── macOS / редакторы ────────────────────────────────────────────────
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+*.swp
+*~
+.idea/
+.vscode/
+
+# ── машинно-специфичное ──────────────────────────────────────────────
+# Пути вида /Users/<имя>/… утекают из примеров и скриптов.
+# Если такой путь нужен в документации — писать ~/… или $HOME/…
+*.local.md
+state.json

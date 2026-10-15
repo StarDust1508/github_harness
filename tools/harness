@@ -1,0 +1,405 @@
+#!/usr/bin/env node
+/**
+ * harness — установщик и сторож личной обвязки агентов.
+ *
+ * Замысел: ядро (скиллы, правила, процедуры) живёт в этом репозитории и
+ * подключается в инструменты ССЫЛКАМИ, а не копиями. Правка одна — видят все.
+ * Что и куда поставлено, записано в ~/.harness/state.json, поэтому prune
+ * убирает ровно своё и не трогает чужое.
+ *
+ * Зависимостей нет: только Node и файловая система. Манифест — ограниченный
+ * YAML (см. harness.yaml и ARCHITECTURE.md).
+ *
+ * Команды: detect · install · outdated · update · prune · doctor · inventory
+ */
+
+import fs from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+import crypto from 'node:crypto'
+import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
+
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const REPO = path.resolve(HERE, '..')
+const MANIFEST = path.join(REPO, 'harness.yaml')
+
+// ─── Разбор ограниченного YAML ──────────────────────────────────────────────
+// Поддерживается ровно то, что есть в harness.yaml: вложенные словари по
+// отступам, списки «- » (скаляры и словари), простые скаляры в кавычках или без.
+// Всё остальное — ошибка разбора, а не молчаливое «не понял».
+
+function parseScalar(raw) {
+  const v = raw.trim()
+  if (v === '') return null
+  if (v === '[]') return []
+  if (v === 'true') return true
+  if (v === 'false') return false
+  if (/^-?\d+$/.test(v)) return Number(v)
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) return v.slice(1, -1)
+  return v
+}
+
+function parseYaml(text) {
+  const lines = text.split('\n')
+  const root = {}
+  const stack = [{ indent: -1, node: root }]
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i]
+    if (/^\s*#/.test(raw) || raw.trim() === '') continue
+    const indent = raw.length - raw.replace(/^\s*/, '').length
+    const line = raw.trim()
+
+    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop()
+    const parent = stack[stack.length - 1].node
+
+    if (line.startsWith('- ') || line === '-') {
+      if (!Array.isArray(parent)) throw new Error(`строка ${i + 1}: элемент списка там, где ожидался словарь`)
+      const rest = line.slice(2).trim()
+      if (rest === '') { const obj = {}; parent.push(obj); stack.push({ indent, node: obj }); continue }
+      const m = rest.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/)
+      if (m) {
+        const obj = {}
+        obj[m[1]] = parseScalar(m[2])
+        parent.push(obj)
+        stack.push({ indent, node: obj })
+      } else {
+        parent.push(parseScalar(rest))
+      }
+      continue
+    }
+
+    const m = line.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/)
+    if (!m) throw new Error(`строка ${i + 1}: не разобрана → ${line.slice(0, 60)}`)
+    const [, key, valueRaw] = m
+    if (valueRaw.trim() === '') {
+      // Смотрим вперёд: список или словарь?
+      let j = i + 1
+      while (j < lines.length && (lines[j].trim() === '' || /^\s*#/.test(lines[j]))) j++
+      const nextIsList = j < lines.length && lines[j].trim().startsWith('- ')
+      const node = nextIsList ? [] : {}
+      parent[key] = node
+      stack.push({ indent, node })
+    } else {
+      parent[key] = parseScalar(valueRaw)
+    }
+  }
+  return root
+}
+
+// ─── Утилиты ────────────────────────────────────────────────────────────────
+const tilde = (p) => (p && p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p)
+const C = process.stdout.isTTY
+  ? { r: '\x1b[31m', g: '\x1b[32m', y: '\x1b[33m', d: '\x1b[2m', b: '\x1b[1m', x: '\x1b[0m' }
+  : { r: '', g: '', y: '', d: '', b: '', x: '' }
+
+function loadManifest() {
+  if (!fs.existsSync(MANIFEST)) die(`нет манифеста: ${MANIFEST}`)
+  return parseYaml(fs.readFileSync(MANIFEST, 'utf8'))
+}
+
+function stateFile(man) { return tilde(man.state_path || '~/.harness/state.json') }
+
+function loadState(man) {
+  const f = stateFile(man)
+  if (!fs.existsSync(f)) return { version: 1, repo: REPO, tools: {} }
+  try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return { version: 1, repo: REPO, tools: {} } }
+}
+
+function saveState(man, st) {
+  const f = stateFile(man)
+  fs.mkdirSync(path.dirname(f), { recursive: true })
+  st.repo = REPO
+  st.updatedAt = new Date().toISOString()
+  fs.writeFileSync(f, JSON.stringify(st, null, 2) + '\n')
+}
+
+function die(msg) { console.error(`${C.r}ошибка:${C.x} ${msg}`); process.exit(1) }
+
+function hasCommand(cmd) {
+  if (!cmd) return false
+  try { execFileSync('sh', ['-c', `command -v ${JSON.stringify(cmd)}`], { stdio: 'ignore' }); return true } catch { return false }
+}
+
+function hashDir(dir) {
+  const h = crypto.createHash('sha256')
+  const walk = (d, rel = '') => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const p = path.join(d, e.name)
+      const r = path.join(rel, e.name)
+      if (e.isDirectory()) walk(p, r)
+      else { h.update(r); h.update(fs.readFileSync(p)) }
+    }
+  }
+  if (fs.existsSync(dir)) walk(dir)
+  return h.digest('hex').slice(0, 16)
+}
+
+/** Разбор фронтматтера SKILL.md ограниченным YAML. */
+function readSkill(dir) {
+  const f = path.join(dir, 'SKILL.md')
+  if (!fs.existsSync(f)) return { error: 'нет SKILL.md' }
+  const text = fs.readFileSync(f, 'utf8')
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+  if (!m) return { error: 'нет YAML-фронтматтера' }
+  let meta
+  try { meta = parseYaml(m[1]) } catch (e) { return { error: `битый YAML: ${e.message}` } }
+  if (!meta.name) return { error: 'фронтматтер без name' }
+  if (!meta.description) return { error: 'фронтматтер без description' }
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(meta.name)) return { error: `имя не kebab-case: ${meta.name}` }
+  const evidence = fs.existsSync(path.join(dir, 'EVIDENCE.md'))
+  const status = meta.status || (evidence ? 'proven' : 'candidate')
+  return { meta, name: meta.name, status, evidence, dir, hash: hashDir(dir) }
+}
+
+function coreSkills(man) {
+  const root = path.join(REPO, man.core_skills || 'core/skills')
+  if (!fs.existsSync(root)) return []
+  return fs.readdirSync(root, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+    .map((e) => readSkill(path.join(root, e.name)))
+    .map((s, i, arr) => ({ ...s, dirName: fs.readdirSync(root).filter((n) => !n.startsWith('.'))[i] }))
+}
+
+// ─── Команды ────────────────────────────────────────────────────────────────
+
+function cmdDetect(man) {
+  console.log(`${C.b}Инструменты на этой машине${C.x}\n`)
+  const rows = []
+  for (const [id, t] of Object.entries(man.tools || {})) {
+    const byCmd = hasCommand(t.detect_cmd)
+    const dirs = [].concat(t.detect_dirs || []).map(tilde)
+    const byDir = dirs.some((d) => fs.existsSync(d))
+    const found = byCmd || byDir
+    rows.push({ id, title: t.title, found, how: byCmd ? `команда ${t.detect_cmd}` : byDir ? 'каталог' : '—' })
+  }
+  rows.sort((a, b) => (a.found === b.found ? 0 : a.found ? -1 : 1))
+  for (const r of rows) {
+    const mark = r.found ? `${C.g}●${C.x}` : `${C.d}○${C.x}`
+    console.log(`${mark} ${r.id.padEnd(18)} ${String(r.title || '').padEnd(24)} ${C.d}${r.how}${C.x}`)
+  }
+  const n = rows.filter((r) => r.found).length
+  console.log(`\nнайдено: ${n} из ${rows.length}`)
+}
+
+function targetSkills(t, man, includeCandidates) {
+  const skills = coreSkills(man).filter((s) => {
+    if (s.error) return false
+    if (s.status === 'disabled') return false
+    if (s.status === 'candidate' && !includeCandidates) return false
+    return true
+  })
+  return skills
+}
+
+function linkSkill(skill, root, layout) {
+  const name = skill.name
+  const dest = layout === 'nested'
+    ? path.join(root, skill.meta.category || 'imported', name)
+    : path.join(root, name)
+  fs.mkdirSync(path.dirname(dest), { recursive: true })
+
+  if (fs.existsSync(dest) || fs.lstatSync(path.dirname(dest)).isDirectory() && isSymlink(dest)) {
+    if (isSymlink(dest)) {
+      const cur = fs.readlinkSync(dest)
+      if (path.resolve(path.dirname(dest), cur) === skill.dir) return { dest, action: 'ok' }
+      fs.unlinkSync(dest)
+    } else {
+      return { dest, action: 'skip-busy', reason: 'путь занят не нашей ссылкой' }
+    }
+  }
+  fs.symlinkSync(skill.dir, dest)
+  return { dest, action: 'linked' }
+}
+
+function isSymlink(p) { try { return fs.lstatSync(p).isSymbolicLink() } catch { return false } }
+
+function cmdInstall(man, which, includeCandidates) {
+  const skills = coreSkills(man)
+  const bad = skills.filter((s) => s.error)
+  if (bad.length) {
+    console.log(`${C.y}пропущены скиллы с дефектами:${C.x}`)
+    for (const b of bad) console.log(`  ${C.r}✗${C.x} ${path.basename(b.dir)} — ${b.error}`)
+    console.log('')
+  }
+  const ready = targetSkills(null, man, includeCandidates)
+  console.log(`${C.b}К установке:${C.x} ${ready.length} скиллов (доказанных: ${ready.filter((s) => s.status === 'proven').length}, кандидатов: ${ready.filter((s) => s.status === 'candidate').length})`)
+  if (!includeCandidates && ready.some((s) => s.status === 'candidate')) {
+    console.log(`${C.d}кандидаты без EVIDENCE.md не ставятся; включить: --candidates${C.x}`)
+  }
+  console.log('')
+
+  const st = loadState(man)
+  const targets = Object.entries(man.tools || {}).filter(([id, t]) => {
+    if (which !== 'all' && id !== which) return false
+    return hasCommand(t.detect_cmd) || [].concat(t.detect_dirs || []).map(tilde).some((d) => fs.existsSync(d))
+  })
+  if (!targets.length) die(`не найден ни один инструмент (запрошено: ${which}). Сначала: harness detect`)
+
+  // Общая точка встречи: ставим ядро один раз, если она объявлена.
+  // Ссылки записываем под служебной записью «_shared», иначе prune их не увидит.
+  const shared = tilde(man.shared_skills_root)
+  if (shared) {
+    fs.mkdirSync(shared, { recursive: true })
+    const rec = (st.tools._shared ||= { skills: [], links: [] })
+    let n = 0
+    for (const s of ready) {
+      const r = linkSkill(s, shared, 'agents')
+      rec.links = rec.links.filter((l) => l.dest !== r.dest)
+      if (r.action !== 'skip-busy') rec.links.push({ name: s.name, dest: r.dest, target: s.dir, hash: s.hash })
+      if (r.action === 'linked') n++
+    }
+    console.log(`${C.g}✓${C.x} общий каталог ${shared.replace(os.homedir(), '~')} — ссылок создано: ${n}`)
+  }
+
+  for (const [id, t] of targets) {
+    const rec = (st.tools[id] ||= { skills: [], links: [] })
+    console.log(`\n${C.b}${t.title || id}${C.x}`)
+    for (const rootSpec of [].concat(t.skill_roots || [])) {
+      if (!rootSpec.path) continue
+      const root = tilde(rootSpec.path)
+      if (root === shared) continue // уже сделано выше
+      fs.mkdirSync(root, { recursive: true })
+      let linked = 0, skipped = 0
+      for (const s of ready) {
+        const r = linkSkill(s, root, rootSpec.layout || 'flat')
+        if (r.action === 'linked' || r.action === 'ok') linked++
+        else { skipped++; console.log(`  ${C.y}!${C.x} ${r.dest.replace(os.homedir(), '~')} — ${r.reason}`) }
+        rec.links = rec.links.filter((l) => l.dest !== r.dest)
+        if (r.action !== 'skip-busy') rec.links.push({ name: s.name, dest: r.dest, target: s.dir, hash: s.hash })
+      }
+      console.log(`  ${root.replace(os.homedir(), '~')} (${rootSpec.layout}) — ссылок: ${linked}${skipped ? `, пропущено: ${skipped}` : ''}`)
+    }
+  }
+  saveState(man, st)
+  console.log(`\n${C.g}готово.${C.x} Состояние: ${stateFile(man).replace(os.homedir(), '~')}`)
+  console.log(`${C.d}проверить: harness doctor${C.x}`)
+}
+
+function cmdDoctor(man) {
+  let problems = 0, warnings = 0
+  console.log(`${C.b}Проверка обвязки${C.x}\n`)
+
+  const skills = coreSkills(man)
+  console.log(`${C.b}Скиллы ядра${C.x} (${skills.length})`)
+  const names = new Map()
+  for (const s of skills) {
+    if (s.error) { console.log(`  ${C.r}✗${C.x} ${path.basename(s.dir)} — ${s.error}`); problems++; continue }
+    if (names.has(s.name)) { console.log(`  ${C.r}✗${C.x} дубль имени «${s.name}»: ${path.basename(names.get(s.name).dir)} и ${path.basename(s.dir)}`); problems++ }
+    else names.set(s.name, s)
+    const mark = s.status === 'proven' ? `${C.g}✓${C.x}` : `${C.y}?${C.x}`
+    const note = s.status === 'proven' ? 'доказан' : 'кандидат (нет EVIDENCE.md)'
+    console.log(`  ${mark} ${s.name.padEnd(28)} ${C.d}${note}${C.x}`)
+    if (s.status === 'candidate') warnings++
+  }
+
+  const reserved = ['skill', 'help', 'compact', 'goal', 'plan', 'clear', 'init']
+  const clash = skills.filter((s) => !s.error && reserved.includes(s.name))
+  if (clash.length) { console.log(`\n${C.r}✗${C.x} имена затеняют встроенные команды: ${clash.map((s) => s.name).join(', ')}`); problems += clash.length }
+
+  console.log(`\n${C.b}Ссылки в инструментах${C.x}`)
+  const st = loadState(man)
+  for (const [id, rec] of Object.entries(st.tools || {})) {
+    let ok = 0, broken = 0
+    for (const l of rec.links || []) {
+      if (!fs.existsSync(l.dest)) { console.log(`  ${C.r}✗${C.x} ${id}: пропала ссылка ${l.dest.replace(os.homedir(), '~')}`); broken++; continue }
+      if (!isSymlink(l.dest)) { console.log(`  ${C.y}!${C.x} ${id}: ${l.dest.replace(os.homedir(), '~')} — не ссылка (копия?)`); warnings++; continue }
+      const cur = path.resolve(path.dirname(l.dest), fs.readlinkSync(l.dest))
+      if (cur !== l.target) { console.log(`  ${C.r}✗${C.x} ${id}: ссылка ведёт не туда → ${cur}`); broken++; continue }
+      ok++
+    }
+    console.log(`  ${broken ? C.r + '✗' + C.x : C.g + '✓' + C.x} ${id}: целых ${ok}${broken ? `, битых ${broken}` : ''}`)
+    problems += broken
+  }
+
+  console.log(`\n${C.b}Манифест${C.x}`)
+  for (const p of [man.core_skills, man.core_policies, man.core_playbooks, man.core_knowledge]) {
+    if (!p) continue
+    const abs = path.join(REPO, p)
+    const exists = fs.existsSync(abs)
+    console.log(`  ${exists ? `${C.g}✓${C.x}` : `${C.y}?${C.x}`} ${p}${exists ? '' : ' — ещё не создан'}`)
+  }
+
+  console.log(`\n${C.b}Итог:${C.x} проблем ${problems}, предупреждений ${warnings}`)
+  process.exit(problems ? 1 : 0)
+}
+
+function cmdOutdated(man) {
+  const st = loadState(man)
+  const skills = new Map(coreSkills(man).filter((s) => !s.error).map((s) => [s.name, s]))
+  let n = 0
+  for (const [id, rec] of Object.entries(st.tools || {})) {
+    for (const l of rec.links || []) {
+      const cur = skills.get(l.name)
+      if (!cur) { console.log(`${C.y}удалён из ядра${C.x}  ${id}: ${l.name}`); n++; continue }
+      if (cur.hash !== l.hash) { console.log(`${C.y}изменён${C.x}          ${id}: ${l.name}  ${C.d}${l.hash} → ${cur.hash}${C.x}`); n++ }
+    }
+  }
+  console.log(n ? `\nрасхождений: ${n} — применить: harness update` : `${C.g}всё актуально${C.x}`)
+}
+
+function cmdUpdate(man) {
+  console.log('Ссылки указывают на ядро напрямую, поэтому содержимое уже актуально.')
+  console.log('Обновляю только записанные отпечатки и пересоздаю битые ссылки.\n')
+  cmdInstall(man, 'all', true)
+}
+
+function cmdPrune(man) {
+  const st = loadState(man)
+  const live = new Set(coreSkills(man).filter((s) => !s.error).map((s) => s.name))
+  let removed = 0
+  for (const [id, rec] of Object.entries(st.tools || {})) {
+    const keep = []
+    for (const l of rec.links || []) {
+      const orphan = !live.has(l.name)
+      if (orphan && isSymlink(l.dest)) { fs.unlinkSync(l.dest); console.log(`${C.y}удалена ссылка${C.x} ${l.dest.replace(os.homedir(), '~')} (скилл убран из ядра)`); removed++; continue }
+      keep.push(l)
+    }
+    rec.links = keep
+  }
+  saveState(man, st)
+  console.log(removed ? `\nубрано: ${removed}` : 'нечего убирать')
+  console.log(`${C.d}копии и чужие файлы не трогаются — только собственные ссылки${C.x}`)
+}
+
+function cmdInventory(man) {
+  const st = loadState(man)
+  const skills = coreSkills(man).filter((s) => !s.error)
+  const out = {
+    repo: REPO,
+    manifestVersion: man.version,
+    skills: skills.map((s) => ({ name: s.name, status: s.status, hash: s.hash })),
+    tools: Object.fromEntries(Object.entries(st.tools || {}).map(([id, r]) => [id, (r.links || []).length])),
+    generatedAt: new Date().toISOString()
+  }
+  console.log(JSON.stringify(out, null, 2))
+}
+
+// ─── Вход ───────────────────────────────────────────────────────────────────
+const [, , cmd = 'help', ...rest] = process.argv
+const includeCandidates = rest.includes('--candidates')
+const target = rest.find((a) => !a.startsWith('--')) || 'all'
+const man = loadManifest()
+
+switch (cmd) {
+  case 'detect': cmdDetect(man); break
+  case 'install': cmdInstall(man, target, includeCandidates); break
+  case 'doctor': cmdDoctor(man); break
+  case 'outdated': cmdOutdated(man); break
+  case 'update': cmdUpdate(man); break
+  case 'prune': cmdPrune(man); break
+  case 'inventory': cmdInventory(man); break
+  default:
+    console.log(`harness — обвязка агентов
+
+  harness detect                 какие инструменты есть на машине
+  harness install [инструмент]   подключить ядро (all — во все найденные)
+       --candidates              включить скиллы без EVIDENCE.md
+  harness doctor                 проверки: YAML, дубли, коллизии, битые ссылки
+  harness outdated               что в ядре изменилось с момента установки
+  harness update                 пересоздать ссылки и обновить отпечатки
+  harness prune                  убрать свои ссылки на исчезнувшие скиллы
+  harness inventory              машинный отчёт об установленном
+`)
+}
