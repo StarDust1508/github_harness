@@ -160,16 +160,22 @@ function readSkill(dir) {
   if (!meta.name) return { error: 'фронтматтер без name' }
   if (!meta.description) return { error: 'фронтматтер без description' }
   if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(meta.name)) return { error: `имя не kebab-case: ${meta.name}` }
-  const evidence = fs.existsSync(path.join(dir, 'EVIDENCE.md'))
-  const status = meta.status || (evidence ? 'proven' : 'candidate')
-  return { meta, name: meta.name, status, evidence, dir, hash: hashDir(dir) }
+  const evidenceFile = path.join(dir, 'EVIDENCE.md')
+  const hasEvidence = fs.existsSync(evidenceFile)
+  // Наличие файла — ещё не доказательство: заготовка из шаблона помечена
+  // маркером и остаётся кандидатом, пока замер не внесён.
+  const filled = hasEvidence && !fs.readFileSync(evidenceFile, 'utf8').includes('НЕ ЗАПОЛНЕНО')
+  const evidence = hasEvidence
+  const status = meta.status || (filled ? 'proven' : 'candidate')
+  return { meta, name: meta.name, status, evidence, filled, dir, hash: hashDir(dir) }
 }
 
 function coreSkills(man) {
   const root = path.join(REPO, man.core_skills || 'core/skills')
   if (!fs.existsSync(root)) return []
   return fs.readdirSync(root, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+    // Каталоги с «_» в начале — служебные (шаблон), а не скиллы.
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('_'))
     .map((e) => readSkill(path.join(root, e.name)))
     .map((s, i, arr) => ({ ...s, dirName: fs.readdirSync(root).filter((n) => !n.startsWith('.'))[i] }))
 }
@@ -301,7 +307,9 @@ function cmdDoctor(man) {
     if (names.has(s.name)) { console.log(`  ${C.r}✗${C.x} дубль имени «${s.name}»: ${path.basename(names.get(s.name).dir)} и ${path.basename(s.dir)}`); problems++ }
     else names.set(s.name, s)
     const mark = s.status === 'proven' ? `${C.g}✓${C.x}` : `${C.y}?${C.x}`
-    const note = s.status === 'proven' ? 'доказан' : 'кандидат (нет EVIDENCE.md)'
+    const note = s.status === 'proven' ? 'доказан'
+      : s.evidence ? 'кандидат (EVIDENCE.md не заполнен)'
+      : 'кандидат (нет EVIDENCE.md)'
     console.log(`  ${mark} ${s.name.padEnd(28)} ${C.d}${note}${C.x}`)
     if (s.status === 'candidate') warnings++
   }
@@ -729,6 +737,41 @@ function cmdImport(man, src, dryRun) {
   console.log(`${C.d}проверить: harness doctor${C.x}`)
 }
 
+
+/**
+ * Создать заготовку скилла из шаблона.
+ *
+ * Смысл: порог доказательности не должен быть бюрократией. Заготовка сразу
+ * содержит и SKILL.md, и EVIDENCE.md с полями замера — заполнить проще,
+ * чем вспоминать, что требуется.
+ */
+function cmdNew(man, name) {
+  if (!name) die('укажите имя: harness new <имя-в-kebab-case>')
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) {
+    die(`имя должно быть в kebab-case (строчные буквы, цифры, дефисы): получено «${name}»`)
+  }
+  const tpl = path.join(REPO, man.core_skills || 'core/skills', '_template')
+  if (!fs.existsSync(tpl)) die(`нет шаблона: ${tpl.replace(REPO, '.')}`)
+  const dest = path.join(REPO, man.core_skills || 'core/skills', name)
+  if (fs.existsSync(dest)) die(`уже существует: ${dest.replace(REPO, '.')}`)
+
+  fs.mkdirSync(dest, { recursive: true })
+  for (const file of fs.readdirSync(tpl)) {
+    const text = fs.readFileSync(path.join(tpl, file), 'utf8')
+    fs.writeFileSync(path.join(dest, file), text.replace(/имя-скилла-в-kebab-case|имя-скилла/g, name))
+  }
+  console.log(`${C.g}Создано:${C.x} ${dest.replace(REPO, '.')}`)
+  console.log(`
+Дальше по порядку:
+  1. Заполнить description — это единственное, что модель видит заранее.
+     Сначала условие применения, потом суть. Без общих слов.
+  2. Написать тело процедуры и раздел «Когда НЕ применять».
+  3. Замерить: без скилла и со скиллом, три метрики, не меньше трёх прогонов.
+  4. Заполнить EVIDENCE.md — до этого скилл остаётся кандидатом
+     и не устанавливается.
+  5. Проверить: harness doctor`)
+}
+
 // ─── Вход ───────────────────────────────────────────────────────────────────
 const [, , cmd = 'help', ...rest] = process.argv
 const includeCandidates = rest.includes('--candidates')
@@ -743,6 +786,7 @@ switch (cmd) {
   case 'update': cmdUpdate(man); break
   case 'prune': cmdPrune(man); break
   case 'inventory': cmdInventory(man); break
+  case 'new': cmdNew(man, rest.find((a) => !a.startsWith('--'))); break
   case 'verify': cmdVerify(man); break
   case 'scan': cmdScan(man, target); break
   case 'import': cmdImport(man, rest.filter((a) => !a.startsWith('--'))[0], rest.includes('--dry-run')); break
@@ -757,6 +801,7 @@ switch (cmd) {
   harness update                 пересоздать ссылки и обновить отпечатки
   harness prune                  убрать свои ссылки на исчезнувшие скиллы
   harness inventory              машинный отчёт об установленном
+  harness new <имя>              создать заготовку скилла из шаблона
   harness verify                 самопроверка перед публикацией: секреты, пути, ссылки
   harness scan <каталог>         разведка: какие скиллы можно перенести
   harness import <путь>          перенести скилл в ядро (--dry-run — только показать)
