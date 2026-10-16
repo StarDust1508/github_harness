@@ -1615,6 +1615,128 @@ function cmdReport(man, asJson) {
   process.stdout.write(L.join('\n') + '\n')
 }
 
+
+// ─── Карточка системы ───────────────────────────────────────────────────────
+//
+// Аудитор спрашивает не «покажите реестры», а «покажите всё про эту систему».
+// Карточка собирает ответ из связанных данных: класс, риски, меры,
+// доказательства, процедуры аудита, обработка данных, открытые находки.
+//
+// Как и отчёт, карточка не пишется руками, а собирается. И как отчёт,
+// она честно показывает, чего не хватает по этой конкретной системе.
+
+function cmdCard(man, systemId) {
+  const rulesPath = path.join(REPO, 'assurance', 'rules.yaml')
+  if (!fs.existsSync(rulesPath)) die('нет assurance/rules.yaml')
+  const rules = parseYaml(fs.readFileSync(rulesPath, 'utf8'))
+  const registers = rules.registers || {}
+  const data = {}
+  for (const [id, r] of Object.entries(registers)) data[id] = loadRegister(r.file) || []
+
+  const systems = data.systems || []
+  if (!systemId) {
+    console.log(`${C.b}Системы в реестре${C.x} (${systems.length})\n`)
+    for (const s of systems) console.log(`  ${s.id.padEnd(24)} ${s.name} ${C.d}(${s.risk_class})${C.x}`)
+    console.log(`\n${C.d}подробности: tools/harness card <id>${C.x}`)
+    return
+  }
+
+  const sys = systems.find((s) => String(s.id) === String(systemId))
+  if (!sys) die(`нет системы «${systemId}». Есть: ${systems.map((s) => s.id).join(', ')}`)
+
+  const risks = (data.risks || []).filter((r) => String(r.system) === String(sys.id))
+  const riskIds = new Set(risks.map((r) => String(r.id)))
+  const controls = (data.controls || []).filter((c) => riskIds.has(String(c.risk)))
+  const controlIds = new Set(controls.map((c) => String(c.id)))
+  const program = (data['audit-program'] || []).filter((a) => controlIds.has(String(a.verifies)) || riskIds.has(String(a.verifies)))
+  const findings = (data.findings || []).filter((f) => controlIds.has(String(f.control)))
+  const processing = (data.processing || []).filter((p) => String(p.system) === String(sys.id))
+  const openFindings = findings.filter((f) => ['open', 'in_progress'].includes(String(f.status)))
+
+  const L = []
+  L.push(`# ${sys.name}`)
+  L.push(``)
+  L.push(`Система \`${sys.id}\` · составлено ${new Date().toISOString().slice(0, 10)} командой \`tools/harness card\``)
+  L.push(``)
+  L.push(`## Классификация`)
+  L.push(``)
+  L.push(`- **Класс риска:** ${sys.risk_class}`)
+  L.push(`- **Основание:** ${sys.classification_reason}`)
+  L.push(`- **Роль организации:** ${sys.role}`)
+  L.push(`- **Владелец:** ${sys.owner}`)
+  L.push(`- **Пересмотр:** ${sys.next_review}`)
+  L.push(``)
+
+  if (String(sys.risk_class) === 'high') {
+    L.push(`## Обязательные артефакты высокого риска`)
+    L.push(``)
+    const needed = ['technical_doc', 'risk_management', 'data_governance', 'human_oversight', 'logging', 'accuracy_robustness']
+    for (const f of needed) {
+      const v = sys[f]
+      L.push(`- ${v ? '✓' : '**✗**'} ${f}${v ? ` — \`${v}\`` : ' — **не указан**'}`)
+    }
+    L.push(``)
+  }
+
+  L.push(`## Риски системы (${risks.length})`)
+  L.push(``)
+  if (!risks.length) L.push(`Рисков для этой системы не заведено.`)
+  else {
+    L.push(`| Риск | Остаточный | Обработка | Принят |`)
+    L.push(`|---|---|---|---|`)
+    for (const r of risks) L.push(`| ${r.title} | ${r.residual} | ${r.treatment} | ${r.accepted_by || '—'} |`)
+  }
+  L.push(``)
+
+  L.push(`## Меры (${controls.length})`)
+  L.push(``)
+  if (!controls.length) L.push(`Мер, закрывающих риски этой системы, нет.`)
+  else {
+    L.push(`| Мера | Политика | Доказательство |`)
+    L.push(`|---|---|---|`)
+    for (const c of controls) L.push(`| ${c.title} | ${c.policy || '—'} | \`${c.evidence || '—'}\` |`)
+  }
+  L.push(``)
+
+  L.push(`## Как это проверяется (${program.length})`)
+  L.push(``)
+  if (!program.length) L.push(`Меры этой системы не проверяются ни одной процедурой аудита.`)
+  else {
+    L.push(`| Процедура | Что смотрим | Периодичность |`)
+    L.push(`|---|---|---|`)
+    for (const a of program) L.push(`| ${a.objective} | ${a.how} | ${a.frequency} |`)
+  }
+  L.push(``)
+
+  if (processing.length) {
+    L.push(`## Обработка персональных данных (${processing.length})`)
+    L.push(``)
+    for (const p of processing) L.push(`- **${p.title}** — основание: ${p.legal_basis}, срок: ${p.retention_period}`)
+    L.push(``)
+  }
+
+  L.push(`## Открытые находки (${openFindings.length})`)
+  L.push(``)
+  if (!openFindings.length) L.push(`Открытых находок по системе нет.`)
+  else for (const f of openFindings) L.push(`- **${f.title}** — важность ${f.severity}, срок ${f.due}, ответственный ${f.verifier}`)
+  L.push(``)
+
+  L.push(`## Чего не хватает по этой системе`)
+  L.push(``)
+  const gaps = []
+  if (!risks.length) gaps.push(`риски не заведены — оценивать нечего`)
+  for (const r of risks) if (!controls.some((c) => String(c.risk) === String(r.id))) gaps.push(`у риска «${r.title}» нет ни одной меры`)
+  for (const r of risks) if (['medium', 'high'].includes(String(r.residual)) && !r.accepted_by) gaps.push(`риск «${r.title}» выше аппетита и не принят явно`)
+  if (String(sys.risk_class) === 'high') for (const f of ['technical_doc', 'risk_management', 'data_governance', 'human_oversight', 'logging', 'accuracy_robustness']) if (!sys[f]) gaps.push(`высокий риск: не указан артефакт ${f}`)
+  if (!program.length && controls.length) gaps.push(`меры есть, но аудитом не проверяются`)
+  if (gaps.length) for (const g of gaps) L.push(`- ${g}`)
+  else L.push(`По данным реестров пробелов нет.`)
+  L.push(``)
+  L.push(`Целостность перед показом: \`tools/harness check\``)
+
+  process.stdout.write(L.join('\n') + '\n')
+}
+
 // ─── Вход ───────────────────────────────────────────────────────────────────
 const [, , cmd = 'help', ...rest] = process.argv
 const includeCandidates = rest.includes('--candidates')
@@ -1633,6 +1755,7 @@ switch (cmd) {
   case 'entrypoint': cmdEntrypoint(man, rest.includes('--write')); break
   case 'capabilities': cmdCapabilities(); break
   case 'eval': cmdEval(man, rest.find((a) => !a.startsWith('--')), { dryRun: rest.includes('--dry-run') }); break
+  case 'card': cmdCard(man, rest.find((a) => !a.startsWith('--'))); break
   case 'report': cmdReport(man, rest.includes('--json')); break
   case 'check': cmdCheck(man, rest.find((a) => !a.startsWith('--'))); break
   case 'verify': cmdVerify(man); break
@@ -1660,6 +1783,7 @@ switch (cmd) {
   harness entrypoint [--write]   точка входа ядра для файла инструкций
   harness capabilities           маршрут: что умеет обвязка, когда и как вызвать
   harness eval [цель]            прогнать атаки по цели из security/targets.yaml
+  harness card [система]         карточка системы: всё про неё в одном документе
   harness report [--json]        отчёт о готовности к аудиту, собранный из реестров
   harness check [реестр]         проверить реестры assurance по правилам
   harness verify                 самопроверка перед публикацией: секреты, пути, ссылки

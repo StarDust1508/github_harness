@@ -421,7 +421,35 @@ if "$HARNESS" check risks 2>&1 | grep -q "в матрице нет уровня"
 cp "$SANDBOX/ra.bak" "$REPO/assurance/risk-appetite.yaml"
 cp "$SANDBOX/rk2.bak" "$REPO/assurance/registers/risks.yaml"
 
-head_ "25. Расхождение раскладки с манифестом ловится"
+head_ "25. Карточка системы собирается и видит пробелы"
+OUT=$("$HARNESS" card sys-cv-screening 2>&1 || true)
+case "$OUT" in
+  *"Классификация"*"Обязательные артефакты"*) ok "карточка собирается" ;;
+  *) bad "карточка не собирается" ;;
+esac
+case "$OUT" in
+  *"Чего не хватает по этой системе"*) ok "есть раздел пробелов" ;;
+  *) bad "нет раздела пробелов" ;;
+esac
+case "$OUT" in
+  *"Пробелов нет"*|*"пробелов нет"*) ok "на целых данных пробелов нет" ;;
+  *) bad "на целых данных найдены пробелы" ;;
+esac
+# Список систем без идентификатора.
+if "$HARNESS" card 2>&1 | grep -q "sys-support-bot"; then ok "список систем выводится"; else bad "список систем не выводится"; fi
+# Пробел должен быть виден: убираем меру у риска.
+cp "$REPO/assurance/registers/controls.yaml" "$SANDBOX/c9.bak"
+python3 - "$REPO/assurance/registers/controls.yaml" <<'PYEOF'
+import sys, pathlib, re
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8")
+t = re.sub(r"  - id: ctl-injection-filter\n(?:.*\n)*?(?=  - id:)", "", t, count=1)
+p.write_text(t, encoding="utf-8")
+PYEOF
+if "$HARNESS" card sys-support-bot 2>&1 | grep -q "нет ни одной меры"; then ok "риск без меры виден в карточке"; else bad "риск без меры не виден"; fi
+cp "$SANDBOX/c9.bak" "$REPO/assurance/registers/controls.yaml"
+
+head_ "26. Расхождение раскладки с манифестом ловится"
 # Манифест обещает, что каталог скиллов DeepSeek Harness плоский. Положим туда
 # вложенный скилл — doctor обязан предупредить, что flat его не увидит.
 mkdir -p "$HOME/.dsh/skills/вложенный/скилл"
