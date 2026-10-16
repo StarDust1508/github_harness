@@ -1212,6 +1212,157 @@ function cmdCapabilities() {
   console.log(`${C.d}этот маршрут попадает агенту через tools/harness entrypoint${C.x}`)
 }
 
+
+// ─── Прогон атак (security) ─────────────────────────────────────────────────
+//
+// Обвязка ЗАПУСКАЕТ КОМАНДУ и читает ответ. Про HTTP и про конкретные
+// инструменты она не знает — это дело цели, описанной в targets.yaml.
+//
+// Распознавание исходов устроено в два слоя, и это осознанно:
+//   машина   — выполняет и сопоставляет шаблоны (дёшево, воспроизводимо);
+//   человек  — разбирает неоднозначное. В роли человека выступает агент,
+//              который и так является моделью: не нужен ни отдельный вызов
+//              API, ни ключи.
+
+function loadYaml(rel) {
+  const abs = path.join(REPO, rel)
+  if (!fs.existsSync(abs)) return null
+  return parseYaml(fs.readFileSync(abs, 'utf8'))
+}
+
+/** Шаблон: подстрока без учёта регистра либо регулярное выражение с префиксом re:. */
+function matches(text, patterns) {
+  for (const raw of [].concat(patterns || [])) {
+    const p = String(raw)
+    if (p.startsWith('re:')) {
+      try { if (new RegExp(p.slice(3), 'i').test(text)) return p } catch { /* битое выражение — пропускаем */ }
+    } else if (text.toLowerCase().includes(p.toLowerCase())) return p
+  }
+  return null
+}
+
+const oneLine = (s) => String(s).replace(/\s+/g, ' ').trim()
+
+function cmdEval(man, targetId, opts) {
+  const targetsDoc = loadYaml('security/targets.yaml')
+  const attacksDoc = loadYaml('security/attacks.yaml')
+  if (!targetsDoc || !attacksDoc) die('нет security/targets.yaml или security/attacks.yaml')
+
+  const targets = (targetsDoc.targets || []).filter((t) => !targetId || t.id === targetId)
+  if (!targets.length) die(`нет цели «${targetId}». Есть: ${(targetsDoc.targets || []).map((t) => t.id).join(', ')}`)
+
+  const detection = attacksDoc.detection || {}
+  const attacks = attacksDoc.attacks || []
+  const refusals = detection.refusal_markers || []
+  const byClass = detection.classes || {}
+
+  for (const t of targets) {
+    const kind = t.kind || 'chat'
+    const env = { ...process.env, ...(t.env || {}) }
+    const timeout = (Number(t.timeout) || 60) * 1000
+
+    console.log(`${C.b}Прогон:${C.x} ${t.title || t.id} ${C.d}(${kind})${C.x}`)
+    if (t.note) console.log(`${C.d}${t.note}${C.x}`)
+
+    const run = (payload) => {
+      const r = spawnSync('sh', ['-c', t.command], {
+        cwd: REPO, input: payload, env: { ...env, HARNESS_ATTACK: payload }, timeout, encoding: 'utf8', maxBuffer: 1 << 24
+      })
+      if (r.error && r.error.code === 'ETIMEDOUT') return { out: '', error: 'таймаут' }
+      return { out: `${r.stdout || ''}${r.stderr || ''}`.trim(), error: r.error ? String(r.error.message) : null }
+    }
+
+    const results = []
+    if (kind === 'static') {
+      // Разовая проверка: атаки к файлам на диске неприменимы.
+      const { out, error } = run('')
+      results.push({ id: 'static-check', class: 'static', verdict: error ? 'error' : (out ? 'collected' : 'empty'), evidence: oneLine(out).slice(0, 400), raw: out })
+      console.log(`${C.d}осмотр выполнен: ${out.split('\n').length} строк${error ? `, ${error}` : ''}${C.x}`)
+    } else {
+      for (const a of attacks) {
+        const { out, error } = run(a.payload || '')
+        const cls = byClass[a.class] || {}
+        const own = a.detect || {}
+        const breachPats = [].concat(own.breach_if || [], cls.breach_if || [])
+        const heldPats = [].concat(own.held_if || [], cls.held_if || [], refusals)
+        let verdict = 'unclear'
+        let why = ''
+        if (error) { verdict = 'error'; why = error }
+        else {
+          const b = matches(out, breachPats)
+          if (b) { verdict = 'breach'; why = `совпало: ${b}` }
+          else {
+            const h = matches(out, heldPats)
+            if (h) { verdict = 'held'; why = `совпало: ${h}` }
+          }
+        }
+        results.push({ id: a.id, class: a.class, title: a.title, verdict, why, evidence: oneLine(out).slice(0, 300) })
+        const mark = verdict === 'breach' ? `${C.r}✗ ПРОБОЙ${C.x}` : verdict === 'held' ? `${C.g}✓ держит${C.x}` : verdict === 'error' ? `${C.r}! ошибка${C.x}` : `${C.y}? на разбор${C.x}`
+        console.log(`  ${mark} ${a.id.padEnd(22)} ${C.d}${a.class}${C.x}`)
+      }
+    }
+
+    const count = (v) => results.filter((r) => r.verdict === v).length
+    const breach = count('breach'), held = count('held'), unclear = count('unclear'), errors = count('error')
+    const date = new Date().toISOString().slice(0, 10)
+
+    // Регрессия: сравниваем с прошлым прогоном той же цели.
+    const dir = path.join(REPO, 'security', 'evals')
+    fs.mkdirSync(dir, { recursive: true })
+    const prev = fs.existsSync(dir)
+      ? fs.readdirSync(dir).filter((f) => f.startsWith(`${t.id}-`) && f.endsWith('.yaml')).sort().pop()
+      : null
+    let newBreaches = []
+    if (prev) {
+      const before = parseYaml(fs.readFileSync(path.join(dir, prev), 'utf8'))
+      const wasHeld = new Set((before.results || []).filter((r) => r.verdict === 'held').map((r) => r.id))
+      newBreaches = results.filter((r) => r.verdict === 'breach' && wasHeld.has(r.id)).map((r) => r.id)
+    }
+
+    if (!opts.dryRun) {
+      const lines = [
+        `# Результат прогона атак. Машинная запись, правится руками только при разборе.`,
+        `target: ${t.id}`,
+        `date: ${date}`,
+        `kind: ${kind}`,
+        `total: ${results.length}`,
+        `breach: ${breach}`,
+        `held: ${held}`,
+        `unclear: ${unclear}`,
+        `errors: ${errors}`,
+        `previous: ${prev || 'нет'}`,
+        `new_breaches: ${newBreaches.length}`,
+        `results:`
+      ]
+      for (const r of results) {
+        lines.push(`  - id: ${r.id}`)
+        lines.push(`    class: ${r.class}`)
+        lines.push(`    verdict: ${r.verdict}`)
+        if (r.why) lines.push(`    why: "${String(r.why).replace(/"/g, "'")}"`)
+        lines.push(`    evidence: "${String(r.evidence).replace(/"/g, "'")}"`)
+      }
+      const file = path.join(dir, `${t.id}-${date}.yaml`)
+      fs.writeFileSync(file, lines.join('\n') + '\n')
+      console.log(`${C.d}записано: ${path.relative(REPO, file)}${C.x}`)
+    }
+
+    console.log(`\n${C.b}Итог по цели:${C.x} всего ${results.length} · пробито ${breach} · удержано ${held} · на разбор ${unclear}${errors ? ` · ошибок ${errors}` : ''}`)
+    if (newBreaches.length) {
+      console.log(`${C.r}РЕГРЕССИЯ:${C.x} в прошлый раз держало, сейчас пробито — ${newBreaches.join(', ')}`)
+    }
+    if (unclear) {
+      console.log(`\n${C.y}На разбор:${C.x} шаблоны не совпали. Это работа для агента-судьи:`)
+      for (const r of results.filter((x) => x.verdict === 'unclear')) {
+        console.log(`  · ${r.id} (${r.class})`)
+        console.log(`    ${C.d}${r.evidence.slice(0, 200)}${C.x}`)
+      }
+      console.log(`${C.d}Разобрав, впишите вердикт в файл прогона — он станет доказательством.${C.x}`)
+    }
+    if (breach) console.log(`${C.r}Пробитые векторы — вход в реестр рисков, а не повод для отчёта «в целом хорошо».${C.x}`)
+    console.log('')
+  }
+}
+
 // ─── Вход ───────────────────────────────────────────────────────────────────
 const [, , cmd = 'help', ...rest] = process.argv
 const includeCandidates = rest.includes('--candidates')
@@ -1229,6 +1380,7 @@ switch (cmd) {
   case 'new': cmdNew(man, rest.find((a) => !a.startsWith('--'))); break
   case 'entrypoint': cmdEntrypoint(man, rest.includes('--write')); break
   case 'capabilities': cmdCapabilities(); break
+  case 'eval': cmdEval(man, rest.find((a) => !a.startsWith('--')), { dryRun: rest.includes('--dry-run') }); break
   case 'check': cmdCheck(man, rest.find((a) => !a.startsWith('--'))); break
   case 'verify': cmdVerify(man); break
   case 'scan': cmdScan(man, target, rest.includes('--docs')); break
@@ -1254,6 +1406,7 @@ switch (cmd) {
   harness new <имя>              создать заготовку скилла из шаблона
   harness entrypoint [--write]   точка входа ядра для файла инструкций
   harness capabilities           маршрут: что умеет обвязка, когда и как вызвать
+  harness eval [цель]            прогнать атаки по цели из security/targets.yaml
   harness check [реестр]         проверить реестры assurance по правилам
   harness verify                 самопроверка перед публикацией: секреты, пути, ссылки
   harness scan <каталог>         разведка: какие скиллы можно перенести
