@@ -20,6 +20,11 @@ if ! "$REPO/tools/harness" verify; then
 fi
 
 echo ""
+if ! "$REPO/tools/harness" check; then
+  fail=1
+fi
+
+echo ""
 if ! "$REPO/tools/harness" doctor >/dev/null 2>&1; then
   echo "доктор нашёл проблемы в ядре:"
   "$REPO/tools/harness" doctor | tail -20

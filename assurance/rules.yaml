@@ -1,0 +1,135 @@
+# Правила проверки реестров.
+#
+# Это данные, а не код: чтобы добавить новую предметную область, достаточно
+# дописать сюда раздел. Программировать ничего не нужно.
+#
+# Пять конструкций, больше нет намеренно:
+#   require     — поля, которые обязаны быть заполнены
+#   require_if  — поля, обязательные при условии (например, при высоком риске)
+#   one_of      — допустимые значения поля
+#   ref         — ссылка на запись другого реестра
+#   not_past    — дата, которая не должна быть в прошлом
+#
+# Юридическое содержание (какие именно артефакты требует AI Act) — предмет
+# проверки юристом. Здесь зафиксирована structure: что должно существовать,
+# чтобы утверждение о соответствии можно было проверить.
+
+registers:
+  systems:
+    title: Реестр ИИ-систем
+    file: assurance/registers/systems.yaml
+    require:
+      - id
+      - name
+      - purpose
+      - role
+      - risk_class
+      - classification_reason
+      - owner
+      - next_review
+    checks:
+      - kind: one_of
+        field: role
+        values:
+          - provider
+          - deployer
+          - both
+      - kind: one_of
+        field: risk_class
+        values:
+          - prohibited
+          - high
+          - limited
+          - minimal
+      # Высокорисковая система без этих артефактов не может считаться
+      # соответствующей: проверять нечего.
+      - kind: require_if
+        field: risk_class
+        equals: high
+        require:
+          - technical_doc
+          - risk_management
+          - data_governance
+          - human_oversight
+          - logging
+          - accuracy_robustness
+      - kind: not_past
+        field: next_review
+
+  risks:
+    title: Реестр рисков
+    file: assurance/registers/risks.yaml
+    require:
+      - id
+      - title
+      - system
+      - owner
+      - treatment
+      - residual
+      - next_review
+    checks:
+      - kind: ref
+        field: system
+        register: systems
+      - kind: one_of
+        field: treatment
+        values:
+          - mitigate
+          - accept
+          - transfer
+          - avoid
+      - kind: one_of
+        field: residual
+        values:
+          - low
+          - medium
+          - high
+      - kind: not_past
+        field: next_review
+
+  controls:
+    title: Реестр мер и доказательств
+    file: assurance/registers/controls.yaml
+    require:
+      - id
+      - title
+      - risk
+      - owner
+      - evidence
+    checks:
+      - kind: ref
+        field: risk
+        register: risks
+      # Мера без доказательства — это намерение, а не мера.
+      - kind: evidence
+        field: evidence
+
+  findings:
+    title: Находки внутреннего аудита
+    file: assurance/registers/findings.yaml
+    require:
+      - id
+      - title
+      - control
+      - severity
+      - status
+      - due
+      - verifier
+    checks:
+      - kind: ref
+        field: control
+        register: controls
+      - kind: one_of
+        field: severity
+        values:
+          - critical
+          - major
+          - minor
+          - observation
+      - kind: one_of
+        field: status
+        values:
+          - open
+          - in_progress
+          - closed
+          - accepted

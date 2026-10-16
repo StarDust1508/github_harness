@@ -14,6 +14,7 @@ core_skills: core/skills
 core_policies: core/policies
 core_playbooks: core/playbooks
 core_knowledge: core/knowledge
+assurance_root: assurance
 
 state_path: ~/.harness/state.json
 backup_dir: ~/.harness/backup

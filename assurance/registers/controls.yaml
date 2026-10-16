@@ -1,0 +1,24 @@
+# Реестр мер и доказательств.
+#
+# Ключевое поле — evidence: путь к файлу, который подтверждает, что мера
+# действительно работает. Мера без доказательства — намерение, а не мера.
+# Проверка убеждается, что файл существует; содержание оценивает человек.
+
+controls:
+  - id: ctl-cv-bias-testing
+    title: Тестирование на смещение по защищённым признакам
+    risk: risk-cv-bias
+    owner: Head of People
+    evidence: assurance/evidence/ctl-cv-bias-testing.md
+
+  - id: ctl-injection-filter
+    title: Фильтрация ввода и разделение инструкций и данных
+    risk: risk-bot-injection
+    owner: Security Lead
+    evidence: assurance/evidence/ctl-injection-filter.md
+
+  - id: ctl-log-redaction
+    title: Обезличивание персональных данных перед записью в журнал
+    risk: risk-bot-pii
+    owner: Security Lead
+    evidence: assurance/evidence/ctl-log-redaction.md

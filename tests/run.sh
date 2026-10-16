@@ -148,7 +148,24 @@ echo "МОИ ПРАВИЛА" > "$HOME/.dsh/AGENTS.md"
 "$HARNESS" entrypoint --write >/dev/null 2>&1 || true
 [ "$(cat "$HOME/.dsh/AGENTS.md")" = "МОИ ПРАВИЛА" ] && ok "существующий файл инструкций не тронут" || bad "чужой файл инструкций перезаписан"
 
-head_ "14. Расхождение раскладки с манифестом ловится"
+head_ "14. Проверка реестров ловит разрыв ссылки"
+# Сначала — что реестры целостны как есть.
+if "$HARNESS" check >/dev/null 2>&1; then ok "реестры целостны"; else bad "проверка реестров падает на целых данных"; fi
+# Затем добавляем запись со ссылкой в никуда и убеждаемся, что её видно.
+cp "$REPO/assurance/registers/risks.yaml" "$SANDBOX/risks.bak"
+{
+  printf '\n  - id: risk-probe\n'
+  printf '    title: Проверка\n'
+  printf '    system: системы-с-таким-именем-нет\n'
+  printf '    owner: probe\n'
+  printf '    treatment: mitigate\n'
+  printf '    residual: low\n'
+  printf '    next_review: 2099-01-01\n'
+} >> "$REPO/assurance/registers/risks.yaml"
+if "$HARNESS" check risks >/dev/null 2>&1; then bad "битая ссылка не найдена"; else ok "битая ссылка найдена"; fi
+cp "$SANDBOX/risks.bak" "$REPO/assurance/registers/risks.yaml"
+
+head_ "15. Расхождение раскладки с манифестом ловится"
 # Манифест обещает, что каталог скиллов DeepSeek Harness плоский. Положим туда
 # вложенный скилл — doctor обязан предупредить, что flat его не увидит.
 mkdir -p "$HOME/.dsh/skills/вложенный/скилл"

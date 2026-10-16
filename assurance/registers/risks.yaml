@@ -1,0 +1,30 @@
+# Реестр рисков.
+#
+# Каждый риск привязан к системе и имеет владельца, способ обработки,
+# остаточный уровень и дату пересмотра. Риск без владельца — не риск,
+# а наблюдение; риск без даты пересмотра — забытый риск.
+
+risks:
+  - id: risk-cv-bias
+    title: Смещение модели при скрининге резюме
+    system: sys-cv-screening
+    owner: Head of People
+    treatment: mitigate
+    residual: medium
+    next_review: 2027-01-15
+
+  - id: risk-bot-injection
+    title: Подмена инструкций через пользовательский ввод
+    system: sys-support-bot
+    owner: Security Lead
+    treatment: mitigate
+    residual: low
+    next_review: 2026-12-01
+
+  - id: risk-bot-pii
+    title: Утечка персональных данных в журналы
+    system: sys-support-bot
+    owner: Security Lead
+    treatment: mitigate
+    residual: low
+    next_review: 2026-12-01

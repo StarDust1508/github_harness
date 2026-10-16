@@ -1,0 +1,31 @@
+# Реестр ИИ-систем.
+#
+# Это ПРИМЕР. Замените на свои системы: структура полей важнее содержания.
+# Для каждой системы обязательны назначение, роль (поставщик или пользователь),
+# класс риска и обоснование классификации. Для высокорисковых — ещё шесть
+# артефактов, наличие которых проверяется автоматически.
+
+systems:
+  - id: sys-cv-screening
+    name: Скрининг резюме
+    purpose: Автоматическая сортировка резюме кандидатов по релевантности вакансии
+    role: deployer
+    risk_class: high
+    classification_reason: Приложение III, пункт 4 — занятость и управление персоналом. Система влияет на доступ к работе
+    owner: Head of People
+    technical_doc: assurance/evidence/sys-cv-screening-technical-doc.md
+    risk_management: assurance/evidence/sys-cv-screening-risk-management.md
+    data_governance: assurance/evidence/sys-cv-screening-data-governance.md
+    human_oversight: assurance/evidence/sys-cv-screening-human-oversight.md
+    logging: assurance/evidence/sys-cv-screening-logging.md
+    accuracy_robustness: assurance/evidence/sys-cv-screening-accuracy.md
+    next_review: 2027-03-01
+
+  - id: sys-support-bot
+    name: Чат-бот поддержки
+    purpose: Отвечает на типовые вопросы клиентов по продукту
+    role: deployer
+    risk_class: limited
+    classification_reason: Прозрачность (статья 50) — взаимодействие с человеком. Влияния на права нет
+    owner: Head of Support
+    next_review: 2027-03-01

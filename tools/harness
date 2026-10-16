@@ -407,7 +407,7 @@ function cmdDoctor(man) {
   }
 
   console.log(`\n${C.b}Манифест${C.x}`)
-  for (const p of [man.core_skills, man.core_policies, man.core_playbooks, man.core_knowledge]) {
+  for (const p of [man.core_skills, man.core_policies, man.core_playbooks, man.core_knowledge, man.assurance_root]) {
     if (!p) continue
     const abs = path.join(REPO, p)
     const exists = fs.existsSync(abs)
@@ -1064,6 +1064,99 @@ function cmdEntrypoint(man, write) {
   if (skipped) console.log(`${C.d}Свой файл инструкций важнее нашего: слияние — решение владельца.${C.x}`)
 }
 
+
+// ─── Проверка реестров (assurance) ──────────────────────────────────────────
+//
+// Правила лежат в assurance/rules.yaml, а не здесь. Код только исполняет
+// пять конструкций и умеет ровно одно: сказать, чего не хватает. Новая
+// предметная область добавляется файлом правил.
+
+function loadRegister(file) {
+  const abs = path.join(REPO, file)
+  if (!fs.existsSync(abs)) return null
+  const data = parseYaml(fs.readFileSync(abs, 'utf8'))
+  for (const v of Object.values(data)) if (Array.isArray(v)) return v
+  return []
+}
+
+const isEmpty = (v) => v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length)
+const today = () => new Date().toISOString().slice(0, 10)
+
+function cmdCheck(man, only) {
+  const rulesPath = path.join(REPO, 'assurance', 'rules.yaml')
+  if (!fs.existsSync(rulesPath)) die('нет assurance/rules.yaml — нечего проверять')
+  const rules = parseYaml(fs.readFileSync(rulesPath, 'utf8'))
+  const registers = rules.registers || {}
+
+  // Сначала читаем все реестры: ссылки проверяются между ними.
+  const data = {}, ids = {}
+  for (const [id, r] of Object.entries(registers)) {
+    data[id] = loadRegister(r.file)
+    ids[id] = new Set((data[id] || []).map((e) => String(e.id)))
+  }
+
+  let problems = 0, checked = 0
+  console.log(`${C.b}Проверка реестров${C.x}\n`)
+
+  for (const [id, r] of Object.entries(registers)) {
+    if (only && only !== id) continue
+    const rows = data[id]
+    if (rows === null) { console.log(`${C.r}✗${C.x} ${id}: нет файла ${r.file}`); problems++; continue }
+    const bad = []
+    for (const row of rows) {
+      checked++
+      const where = `${id}/${row.id || '?'}`
+      for (const f of [].concat(r.require || [])) {
+        if (isEmpty(row[f])) bad.push(`${where}: не заполнено обязательное поле «${f}»`)
+      }
+      for (const chk of [].concat(r.checks || [])) {
+        if (chk.kind === 'require_if') {
+          const v = String(row[chk.field] ?? '')
+          if (v === String(chk.equals)) {
+            for (const f of [].concat(chk.require || [])) {
+              if (isEmpty(row[f])) bad.push(`${where}: при ${chk.field}=${chk.equals} обязательно «${f}»`)
+            }
+          }
+        } else if (chk.kind === 'one_of') {
+          const v = String(row[chk.field] ?? '')
+          if (!isEmpty(row[chk.field]) && !chk.values.map(String).includes(v)) {
+            bad.push(`${where}: «${chk.field}» = «${v}», допустимо: ${chk.values.join(', ')}`)
+          }
+        } else if (chk.kind === 'ref') {
+          const v = row[chk.field]
+          if (!isEmpty(v)) {
+            const target = String(v)
+            if (!ids[chk.register]) bad.push(`${where}: ссылка на неизвестный реестр «${chk.register}»`)
+            else if (!ids[chk.register].has(target)) bad.push(`${where}: «${chk.field}» ссылается на несуществующее «${target}»`)
+          }
+        } else if (chk.kind === 'evidence') {
+          for (const f of [].concat(chk.field)) {
+            const v = row[f]
+            if (isEmpty(v)) continue
+            if (!fs.existsSync(path.join(REPO, String(v)))) bad.push(`${where}: доказательство не найдено — ${v}`)
+          }
+        } else if (chk.kind === 'not_past') {
+          const v = row[chk.field]
+          if (!isEmpty(v) && String(v) < today()) bad.push(`${where}: «${chk.field}» = ${v} — срок прошёл`)
+        } else {
+          bad.push(`${where}: неизвестная конструкция правила «${chk.kind}»`)
+        }
+      }
+    }
+    const mark = bad.length ? `${C.r}✗${C.x}` : `${C.g}✓${C.x}`
+    console.log(`${mark} ${r.title || id} — записей ${rows.length}${bad.length ? `, проблем ${bad.length}` : ''}`)
+    for (const b of bad) console.log(`    ${C.d}${b}${C.x}`)
+    problems += bad.length
+  }
+
+  console.log(`\n${C.b}Итог:${C.x} записей ${checked}, проблем ${problems}`)
+  if (problems) {
+    console.log(`${C.r}Показывать аудитору рано:${C.x} сначала закрыть перечисленное выше.`)
+    process.exit(1)
+  }
+  console.log(`${C.g}Реестры целостны.${C.x}`)
+}
+
 // ─── Вход ───────────────────────────────────────────────────────────────────
 const [, , cmd = 'help', ...rest] = process.argv
 const includeCandidates = rest.includes('--candidates')
@@ -1080,6 +1173,7 @@ switch (cmd) {
   case 'inventory': cmdInventory(man); break
   case 'new': cmdNew(man, rest.find((a) => !a.startsWith('--'))); break
   case 'entrypoint': cmdEntrypoint(man, rest.includes('--write')); break
+  case 'check': cmdCheck(man, rest.find((a) => !a.startsWith('--'))); break
   case 'verify': cmdVerify(man); break
   case 'scan': cmdScan(man, target, rest.includes('--docs')); break
   case 'import': {
@@ -1103,6 +1197,7 @@ switch (cmd) {
   harness inventory              машинный отчёт об установленном
   harness new <имя>              создать заготовку скилла из шаблона
   harness entrypoint [--write]   точка входа ядра для файла инструкций
+  harness check [реестр]         проверить реестры assurance по правилам
   harness verify                 самопроверка перед публикацией: секреты, пути, ссылки
   harness scan <каталог>         разведка: какие скиллы можно перенести
        --docs                    проверять обычные документы, а не скиллы
