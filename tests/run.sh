@@ -207,7 +207,27 @@ case "$OUT" in
 esac
 rm -f "$REPO"/security/evals/self-test-*.yaml
 
-head_ "17. Расхождение раскладки с манифестом ловится"
+head_ "17. Ответы на вопросник проверяются как данные"
+if "$HARNESS" check answers >/dev/null 2>&1; then ok "библиотека ответов целостна"; else bad "библиотека ответов не проходит проверку"; fi
+# Ответ «да» без доказательства — обещание, а не ответ. Проверяем, что видно.
+cp "$REPO/assurance/registers/answers.yaml" "$SANDBOX/answers.bak"
+python3 - "$REPO/assurance/registers/answers.yaml" <<'PYEOF'
+import sys, pathlib, re
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8")
+t = re.sub(r"    evidence: assurance/evidence/ans-encryption\.md\n", "", t, count=1)
+p.write_text(t, encoding="utf-8")
+PYEOF
+if "$HARNESS" check answers 2>&1 | grep -q "не указано доказательство"; then ok "ответ без доказательства обнаружен"; else bad "ответ без доказательства не обнаружен"; fi
+cp "$SANDBOX/answers.bak" "$REPO/assurance/registers/answers.yaml"
+# Ссылка вопросника на несуществующий ответ.
+cp "$REPO/assurance/registers/questionnaires/example.yaml" "$SANDBOX/q.bak"
+sed -i '' 's/    answer: ans-personnel/    answer: ans-нет-такого/' "$REPO/assurance/registers/questionnaires/example.yaml" 2>/dev/null || \
+  sed -i 's/    answer: ans-personnel/    answer: ans-нет-такого/' "$REPO/assurance/registers/questionnaires/example.yaml"
+if "$HARNESS" check questionnaire-example 2>&1 | grep -q "ссылается на несуществующее"; then ok "ссылка на несуществующий ответ обнаружена"; else bad "ссылка не обнаружена"; fi
+cp "$SANDBOX/q.bak" "$REPO/assurance/registers/questionnaires/example.yaml"
+
+head_ "18. Расхождение раскладки с манифестом ловится"
 # Манифест обещает, что каталог скиллов DeepSeek Harness плоский. Положим туда
 # вложенный скилл — doctor обязан предупредить, что flat его не увидит.
 mkdir -p "$HOME/.dsh/skills/вложенный/скилл"

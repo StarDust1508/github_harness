@@ -104,6 +104,53 @@ registers:
       - kind: evidence
         field: evidence
 
+  # ── Ответы на security-вопросники ────────────────────────────────────────
+  #
+  # Тот же движок правил, что у реестров: новый код не потребовался.
+  # Вопросник — это реестр, чьи записи ссылаются на библиотеку ответов.
+  answers:
+    title: Библиотека ответов
+    file: assurance/registers/answers.yaml
+    require:
+      - id
+      - topic
+      - intent
+      - status
+      - owner
+      - reviewed
+      - answer
+    checks:
+      - kind: one_of
+        field: status
+        values:
+          - yes
+          - partial
+          - no
+          - na
+      # «Да, мы это делаем» без доказательства — обещание, а не ответ.
+      - kind: evidence
+        field: evidence
+      # Частичное выполнение без плана закрытия — это отказ, замаскированный
+      # под прогресс. Клиент имеет право видеть срок.
+      - kind: require_if
+        field: status
+        equals: partial
+        require:
+          - remediation
+
+  questionnaire-example:
+    title: Вопросник клиента (пример)
+    file: assurance/registers/questionnaires/example.yaml
+    require:
+      - id
+      - question
+      - answer
+    checks:
+      # Вопрос без ответа — незакрытый вопросник.
+      - kind: ref
+        field: answer
+        register: answers
+
   findings:
     title: Находки внутреннего аудита
     file: assurance/registers/findings.yaml

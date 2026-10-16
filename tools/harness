@@ -1168,9 +1168,12 @@ function cmdCheck(man, only) {
             else if (!ids[chk.register].has(target)) bad.push(`${where}: «${chk.field}» ссылается на несуществующее «${target}»`)
           }
         } else if (chk.kind === 'evidence') {
+          // Поле обязательно: «да, мы это делаем» без ссылки на доказательство —
+          // обещание, а не ответ. Пропуск пустого поля здесь был дырой:
+          // хватало удалить строку с доказательством, и проверка молчала.
           for (const f of [].concat(chk.field)) {
             const v = row[f]
-            if (isEmpty(v)) continue
+            if (isEmpty(v)) { bad.push(`${where}: не указано доказательство в поле «${f}»`); continue }
             if (!fs.existsSync(path.join(REPO, String(v)))) bad.push(`${where}: доказательство не найдено — ${v}`)
           }
         } else if (chk.kind === 'not_past') {
