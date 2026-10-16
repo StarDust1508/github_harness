@@ -1215,6 +1215,29 @@ function validateRegisters(rules, only) {
               bad.push(`${where}: «${chk.field}» ссылается на несуществующее «${target}» (искали в: ${known.join(', ')})`)
             }
           }
+        } else if (chk.kind === 'matrix') {
+          // Уровень риска выводится из двух осей по таблице, а остаточный
+          // уровень не может быть ВЫШЕ исходного: обработка не ухудшает
+          // положение. Правило ловит случай, когда в реестре записан
+          // остаточный риск выше исходного — то есть обработка не описана
+          // или описана неверно.
+          const doc = loadYaml(chk.table)
+          const table = doc && doc[chk.key || 'matrix']
+          const axes = [].concat(chk.from || [])
+          const level = table && table[String(row[axes[0]])] && table[String(row[axes[0]])][String(row[axes[1]])]
+          if (!table) {
+            bad.push(`${where}: нет таблицы ${chk.table} — сверка не выполнена`)
+          } else if (!level) {
+            // Пустая клетка означала бы, что проверка молча пропущена.
+            bad.push(`${where}: в матрице нет уровня для ${axes[0]}=${row[axes[0]]} и ${axes[1]}=${row[axes[1]]}`)
+          } else {
+            const order = [].concat(chk.order || ['low', 'medium', 'high']).map(String)
+            const got = order.indexOf(String(row[chk.field]))
+            const base = order.indexOf(String(level))
+            if (got >= 0 && base >= 0 && got > base) {
+              bad.push(`${where}: «${chk.field}» = ${row[chk.field]} выше исходного уровня ${level} (${axes[0]}=${row[axes[0]]}, ${axes[1]}=${row[axes[1]]}) — обработка не может ухудшить риск`)
+            }
+          }
         } else if (chk.kind === 'ref_each') {
           // Ссылка-список: каждая запись должна существовать. Нужна там, где
           // одна политика закрывает несколько рисков, и потеря одной ссылки

@@ -369,7 +369,59 @@ PYEOF
 if "$HARNESS" doctor 2>&1 | grep -q "нет payload"; then ok "атака без нагрузки обнаружена"; else bad "атака без нагрузки не обнаружена"; fi
 cp "$SANDBOX/at2.bak" "$REPO/security/attacks.yaml"
 
-head_ "24. Расхождение раскладки с манифестом ловится"
+head_ "24. Остаточный риск не может быть выше исходного"
+cp "$REPO/assurance/registers/risks.yaml" "$SANDBOX/rk.bak"
+python3 - "$REPO/assurance/registers/risks.yaml" <<'PYEOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8")
+t = t.replace("""    likelihood: medium
+    impact: medium
+    treatment: mitigate
+    residual: low
+    next_review: 2026-12-01""", """    likelihood: medium
+    impact: medium
+    treatment: mitigate
+    residual: high
+    accepted_by: Security Lead
+    acceptance_reason: проверка правила
+    next_review: 2026-12-01""", 1)
+p.write_text(t, encoding="utf-8")
+PYEOF
+if "$HARNESS" check risks 2>&1 | grep -q "обработка не может ухудшить риск"; then ok "завышенный остаточный риск обнаружен"; else bad "завышенный остаточный риск не обнаружен"; fi
+cp "$SANDBOX/rk.bak" "$REPO/assurance/registers/risks.yaml"
+# Пустая клетка матрицы: проверка обязана сообщить, а не промолчать.
+# Первая версия этого теста была неспособна упасть: она убирала клетку,
+# на которую не ссылалась ни одна запись, и «проходила» по безвредной ветке.
+# Теперь клетка убирается И риск переводится на эту комбинацию.
+cp "$REPO/assurance/risk-appetite.yaml" "$SANDBOX/ra.bak"
+cp "$REPO/assurance/registers/risks.yaml" "$SANDBOX/rk2.bak"
+python3 - "$REPO/assurance/risk-appetite.yaml" "$REPO/assurance/registers/risks.yaml" <<'PYEOF'
+import sys, pathlib
+a = pathlib.Path(sys.argv[1]); b = pathlib.Path(sys.argv[2])
+# Убираем клетку high + medium из матрицы.
+t = a.read_text(encoding="utf-8")
+t = t.replace("""  high:
+    low: medium
+    medium: high
+    high: high""", """  high:
+    low: medium
+    high: high""", 1)
+a.write_text(t, encoding="utf-8")
+# Переводим один риск на эту комбинацию, иначе клетка не будет запрошена.
+t2 = b.read_text(encoding="utf-8")
+t2 = t2.replace("""    likelihood: medium
+    impact: medium
+    treatment: mitigate""", """    likelihood: high
+    impact: medium
+    treatment: mitigate""", 1)
+b.write_text(t2, encoding="utf-8")
+PYEOF
+if "$HARNESS" check risks 2>&1 | grep -q "в матрице нет уровня"; then ok "пропущенная клетка матрицы обнаружена"; else bad "пропущенная клетка матрицы не обнаружена"; fi
+cp "$SANDBOX/ra.bak" "$REPO/assurance/risk-appetite.yaml"
+cp "$SANDBOX/rk2.bak" "$REPO/assurance/registers/risks.yaml"
+
+head_ "25. Расхождение раскладки с манифестом ловится"
 # Манифест обещает, что каталог скиллов DeepSeek Harness плоский. Положим туда
 # вложенный скилл — doctor обязан предупредить, что flat его не увидит.
 mkdir -p "$HOME/.dsh/skills/вложенный/скилл"
