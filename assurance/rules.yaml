@@ -103,6 +103,10 @@ registers:
       # Мера без доказательства — это намерение, а не мера.
       - kind: evidence
         field: evidence
+      # Мера, которую не проверяет ни одна процедура, существует на бумаге.
+      - kind: covered_by
+        register: audit-program
+        field: verifies
 
   # ── Ответы на security-вопросники ────────────────────────────────────────
   #
@@ -151,6 +155,33 @@ registers:
         field: answer
         register: answers
 
+  audit-program:
+    title: Программа внутреннего аудита
+    file: assurance/audit-program.yaml
+    require:
+      - id
+      - area
+      - objective
+      - how
+      - evidence_expected
+      - verifies
+      - frequency
+    checks:
+      - kind: one_of
+        field: frequency
+        values:
+          - monthly
+          - quarterly
+          - semiannual
+          - annual
+      # Проверка без привязки к мере или ответу превращается в общий чек-лист,
+      # который проверяет всё и ничего.
+      - kind: ref_any
+        field: verifies
+        registers:
+          - controls
+          - answers
+
   findings:
     title: Находки внутреннего аудита
     file: assurance/registers/findings.yaml
@@ -158,6 +189,7 @@ registers:
       - id
       - title
       - control
+      - test
       - severity
       - status
       - due
@@ -166,6 +198,9 @@ registers:
       - kind: ref
         field: control
         register: controls
+      - kind: ref
+        field: test
+        register: audit-program
       - kind: one_of
         field: severity
         values:

@@ -227,7 +227,27 @@ sed -i '' 's/    answer: ans-personnel/    answer: ans-нет-такого/' "$R
 if "$HARNESS" check questionnaire-example 2>&1 | grep -q "ссылается на несуществующее"; then ok "ссылка на несуществующий ответ обнаружена"; else bad "ссылка не обнаружена"; fi
 cp "$SANDBOX/q.bak" "$REPO/assurance/registers/questionnaires/example.yaml"
 
-head_ "18. Расхождение раскладки с манифестом ловится"
+head_ "18. Каждая мера обязана кем-то проверяться"
+if "$HARNESS" check audit-program >/dev/null 2>&1; then ok "программа аудита целостна"; else bad "программа аудита не проходит проверку"; fi
+# Мера, которую не проверяет ни одна процедура, существует только на бумаге.
+cp "$REPO/assurance/audit-program.yaml" "$SANDBOX/ap.bak"
+python3 - "$REPO/assurance/audit-program.yaml" <<'PYEOF'
+import sys, pathlib, re
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8")
+t = re.sub(r"  - id: au-bias-testing\n(?:.*\n)*?(?=  - id:)", "", t, count=1)
+p.write_text(t, encoding="utf-8")
+PYEOF
+if "$HARNESS" check controls 2>&1 | grep -q "не проверяется ни одной процедурой"; then ok "непокрытая мера обнаружена"; else bad "непокрытая мера не обнаружена"; fi
+cp "$SANDBOX/ap.bak" "$REPO/assurance/audit-program.yaml"
+# Находка обязана ссылаться на процедуру, из которой пришла.
+cp "$REPO/assurance/registers/findings.yaml" "$SANDBOX/find.bak"
+sed -i '' 's/    test: au-log-redaction/    test: au-нет/' "$REPO/assurance/registers/findings.yaml" 2>/dev/null || \
+  sed -i 's/    test: au-log-redaction/    test: au-нет/' "$REPO/assurance/registers/findings.yaml"
+if "$HARNESS" check findings 2>&1 | grep -q "ссылается на несуществующее"; then ok "находка без процедуры обнаружена"; else bad "находка без процедуры не обнаружена"; fi
+cp "$SANDBOX/find.bak" "$REPO/assurance/registers/findings.yaml"
+
+head_ "19. Расхождение раскладки с манифестом ловится"
 # Манифест обещает, что каталог скиллов DeepSeek Harness плоский. Положим туда
 # вложенный скилл — doctor обязан предупредить, что flat его не увидит.
 mkdir -p "$HOME/.dsh/skills/вложенный/скилл"

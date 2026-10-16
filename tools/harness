@@ -1160,13 +1160,27 @@ function cmdCheck(man, only) {
           if (!isEmpty(row[chk.field]) && !chk.values.map(String).includes(v)) {
             bad.push(`${where}: «${chk.field}» = «${v}», допустимо: ${chk.values.join(', ')}`)
           }
-        } else if (chk.kind === 'ref') {
+        } else if (chk.kind === 'ref' || chk.kind === 'ref_any') {
           const v = row[chk.field]
           if (!isEmpty(v)) {
             const target = String(v)
-            if (!ids[chk.register]) bad.push(`${where}: ссылка на неизвестный реестр «${chk.register}»`)
-            else if (!ids[chk.register].has(target)) bad.push(`${where}: «${chk.field}» ссылается на несуществующее «${target}»`)
+            // ref_any: ссылка допустима в любой из перечисленных реестров —
+            // проверка аудита может подтверждать и меру, и ответ.
+            const list = chk.kind === 'ref_any' ? [].concat(chk.registers || []) : [chk.register]
+            const known = list.filter((r) => ids[r])
+            if (!known.length) bad.push(`${where}: ссылка на неизвестный реестр «${list.join(', ')}»`)
+            else if (!known.some((r) => ids[r].has(target))) {
+              bad.push(`${where}: «${chk.field}» ссылается на несуществующее «${target}» (искали в: ${known.join(', ')})`)
+            }
           }
+        } else if (chk.kind === 'covered_by') {
+          // Покрытие: запись обязана кем-то проверяться. Мера, которую не
+          // проверяет ни одна процедура аудита, существует только на бумаге —
+          // и это опаснее отсутствующей меры, потому что о ней думают,
+          // что она есть.
+          const covering = data[chk.register] || []
+          const seen = covering.some((r) => String(r[chk.field]) === String(row.id))
+          if (!seen) bad.push(`${where}: не проверяется ни одной процедурой аудита (нет ссылки в ${chk.register}.${chk.field})`)
         } else if (chk.kind === 'evidence') {
           // Поле обязательно: «да, мы это делаем» без ссылки на доказательство —
           // обещание, а не ответ. Пропуск пустого поля здесь был дырой:
