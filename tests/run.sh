@@ -284,7 +284,33 @@ cp "$SANDBOX/dsr.bak" "$REPO/assurance/registers/dsr.yaml"
 # Закрытый запрос с прошедшим сроком нарушением не является.
 if "$HARNESS" check dsr 2>&1 | grep -q "dsr-2026-02"; then bad "закрытый запрос ошибочно признан просроченным"; else ok "закрытый запрос не считается просроченным"; fi
 
-head_ "21. Расхождение раскладки с манифестом ловится"
+head_ "21. Отчёт собирается из данных и не врёт"
+OUT=$("$HARNESS" report 2>&1 || true)
+case "$OUT" in
+  *"Готовность к внешнему аудиту"*) ok "отчёт собран" ;;
+  *) bad "отчёт не собран" ;;
+esac
+case "$OUT" in
+  *"## Чего нет"*) ok "есть раздел о пробелах" ;;
+  *) bad "нет раздела о пробелах" ;;
+esac
+case "$OUT" in
+  *"Находки в работе"*|*"Открытых пунктов нет"*) ok "открытые вопросы показаны" ;;
+  *) bad "открытые вопросы не показаны" ;;
+esac
+# Отчёт из несогласованных данных собираться не должен.
+cp "$REPO/assurance/registers/controls.yaml" "$SANDBOX/ctl.bak"
+python3 - "$REPO/assurance/registers/controls.yaml" <<'PYEOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8")
+t = t.replace("    evidence: assurance/evidence/ctl-cv-bias-testing.md\n", "", 1)
+p.write_text(t, encoding="utf-8")
+PYEOF
+if "$HARNESS" report >/dev/null 2>&1; then bad "отчёт собран из сломанных данных"; else ok "отчёт отказался собираться из сломанных данных"; fi
+cp "$SANDBOX/ctl.bak" "$REPO/assurance/registers/controls.yaml"
+
+head_ "22. Расхождение раскладки с манифестом ловится"
 # Манифест обещает, что каталог скиллов DeepSeek Harness плоский. Положим туда
 # вложенный скилл — doctor обязан предупредить, что flat его не увидит.
 mkdir -p "$HOME/.dsh/skills/вложенный/скилл"

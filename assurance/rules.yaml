@@ -330,3 +330,10 @@ registers:
           - in_progress
           - closed
           - accepted
+      # Находка со сроком, который прошёл, и статусом «в работе» — это находка,
+      # которую решили не замечать. Закрытая и принятая к сведению не в счёт.
+      - kind: not_past
+        field: due
+        unless_in:
+          - closed
+          - accepted

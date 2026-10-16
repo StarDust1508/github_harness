@@ -1120,32 +1120,40 @@ function loadRegister(file) {
 const isEmpty = (v) => v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length)
 const today = () => new Date().toISOString().slice(0, 10)
 
-function cmdCheck(man, only) {
-  const rulesPath = path.join(REPO, 'assurance', 'rules.yaml')
-  if (!fs.existsSync(rulesPath)) die('нет assurance/rules.yaml — нечего проверять')
-  const rules = parseYaml(fs.readFileSync(rulesPath, 'utf8'))
+/**
+ * Проверить реестры по правилам. Возвращает находки, ничего не печатает.
+ *
+ * Вынесено отдельно, потому что проверять нужно в двух местах: при явном
+ * запуске и перед сборкой отчёта. Отчёт, собранный из несогласованных данных,
+ * выглядит целым и именно поэтому опасен: аудитор сверит его с реестром
+ * и найдёт расхождение.
+ */
+function validateRegisters(rules, only) {
   const registers = rules.registers || {}
-
-  // Сначала читаем все реестры: ссылки проверяются между ними.
   const data = {}, ids = {}
   for (const [id, r] of Object.entries(registers)) {
     data[id] = loadRegister(r.file)
     ids[id] = new Set((data[id] || []).map((e) => String(e.id)))
   }
 
+  const report = []
   let problems = 0, checked = 0
-  console.log(`${C.b}Проверка реестров${C.x}\n`)
 
   for (const [id, r] of Object.entries(registers)) {
     if (only && only !== id) continue
     const rows = data[id]
-    if (rows === null) { console.log(`${C.r}✗${C.x} ${id}: нет файла ${r.file}`); problems++; continue }
+    if (rows === null) { report.push({ id, title: r.title || id, rows: 0, bad: [`нет файла ${r.file}`] }); problems++; continue }
     const bad = []
+    // Одно и то же отсутствующее поле может поймать и require, и специализированная
+    // проверка (например, evidence). Сообщение должно быть одно: повтор читается
+    // как две разные проблемы и завышает серьёзность.
+    const missing = new Set()
+    const miss = (where, field, msg) => { const k = `${where}|${field}`; if (missing.has(k)) return; missing.add(k); bad.push(msg) }
     for (const row of rows) {
       checked++
       const where = `${id}/${row.id || '?'}`
       for (const f of [].concat(r.require || [])) {
-        if (isEmpty(row[f])) bad.push(`${where}: не заполнено обязательное поле «${f}»`)
+        if (isEmpty(row[f])) miss(where, f, `${where}: не заполнено обязательное поле «${f}»`)
       }
       for (const chk of [].concat(r.checks || [])) {
         if (chk.kind === 'require_if') {
@@ -1157,7 +1165,7 @@ function cmdCheck(man, only) {
             : chk.equals !== undefined ? [String(chk.equals)] : []
           if (values.includes(v)) {
             for (const f of [].concat(chk.require || [])) {
-              if (isEmpty(row[f])) bad.push(`${where}: при ${chk.field}=${v} обязательно «${f}»`)
+              if (isEmpty(row[f])) miss(where, f, `${where}: при ${chk.field}=${v} обязательно «${f}»`)
             }
           }
         } else if (chk.kind === 'one_of') {
@@ -1192,7 +1200,7 @@ function cmdCheck(man, only) {
           // хватало удалить строку с доказательством, и проверка молчала.
           for (const f of [].concat(chk.field)) {
             const v = row[f]
-            if (isEmpty(v)) { bad.push(`${where}: не указано доказательство в поле «${f}»`); continue }
+            if (isEmpty(v)) { miss(where, f, `${where}: не указано доказательство в поле «${f}»`); continue }
             if (!fs.existsSync(path.join(REPO, String(v)))) bad.push(`${where}: доказательство не найдено — ${v}`)
           }
         } else if (chk.kind === 'not_past') {
@@ -1207,10 +1215,24 @@ function cmdCheck(man, only) {
         }
       }
     }
-    const mark = bad.length ? `${C.r}✗${C.x}` : `${C.g}✓${C.x}`
-    console.log(`${mark} ${r.title || id} — записей ${rows.length}${bad.length ? `, проблем ${bad.length}` : ''}`)
-    for (const b of bad) console.log(`    ${C.d}${b}${C.x}`)
+    report.push({ id, title: r.title || id, rows: rows.length, bad })
     problems += bad.length
+  }
+
+  return { report, problems, checked, data, registers }
+}
+
+function cmdCheck(man, only) {
+  const rulesPath = path.join(REPO, 'assurance', 'rules.yaml')
+  if (!fs.existsSync(rulesPath)) die('нет assurance/rules.yaml — нечего проверять')
+  const rules = parseYaml(fs.readFileSync(rulesPath, 'utf8'))
+
+  console.log(`${C.b}Проверка реестров${C.x}\n`)
+  const { report: rows, problems, checked } = validateRegisters(rules, only)
+  for (const row of rows) {
+    const mark = row.bad.length ? `${C.r}✗${C.x}` : `${C.g}✓${C.x}`
+    console.log(`${mark} ${row.title} — записей ${row.rows}${row.bad.length ? `, проблем ${row.bad.length}` : ''}`)
+    for (const b of row.bad) console.log(`    ${C.d}${b}${C.x}`)
   }
 
   console.log(`\n${C.b}Итог:${C.x} записей ${checked}, проблем ${problems}`)
@@ -1389,6 +1411,141 @@ function cmdEval(man, targetId, opts) {
   }
 }
 
+
+// ─── Отчёт о готовности к аудиту ────────────────────────────────────────────
+//
+// Отчёт СОБИРАЕТСЯ из реестров, а не пишется руками. Рукописный отчёт
+// устаревает в тот же день, а разошедшийся с данными документ хуже
+// отсутствующего: аудитор сверит его с реестром и найдёт расхождение.
+//
+// Задача отчёта — не похвалить, а показать картину целиком: что есть,
+// чем подтверждено и что осталось открытым. Открытые пункты идут не в конце
+// мелким шрифтом, а отдельным разделом.
+
+function cmdReport(man, asJson) {
+  const rulesPath = path.join(REPO, 'assurance', 'rules.yaml')
+  if (!fs.existsSync(rulesPath)) die('нет assurance/rules.yaml')
+  const rules = parseYaml(fs.readFileSync(rulesPath, 'utf8'))
+  const registers = rules.registers || {}
+
+  // Отчёт из несогласованных данных опаснее отсутствия отчёта: он выглядит
+  // целым. Поэтому сначала проверка, и только при чистом результате — сборка.
+  const { problems, report: rows } = validateRegisters(rules, null)
+  const data = {}
+  for (const [id, r] of Object.entries(registers)) data[id] = loadRegister(r.file) || []
+
+  const uniq = (arr) => [...new Set(arr)]
+  const find = (id) => data[id] || []
+  const openFindings = find('findings').filter((f) => ['open', 'in_progress'].includes(String(f.status)))
+  const acceptedRisks = find('risks').filter((r) => !isEmpty(r.accepted_by))
+  const openDsr = find('dsr').filter((d) => !['closed', 'refused'].includes(String(d.status)))
+  const testedControls = new Set(find('audit-program').map((a) => String(a.verifies)))
+  const controls = find('controls')
+  const evidenceFiles = fs.existsSync(path.join(REPO, 'assurance', 'evidence'))
+    ? fs.readdirSync(path.join(REPO, 'assurance', 'evidence')).filter((f) => f.endsWith('.md') && f !== 'README.md')
+    : []
+
+  const today = new Date().toISOString().slice(0, 10)
+
+  if (asJson) {
+    console.log(JSON.stringify({
+      date: today,
+      registers: Object.fromEntries(Object.entries(registers).map(([id, r]) => [id, { title: r.title, records: data[id].length }])),
+      coverage: { controls: controls.length, tested: controls.filter((c) => testedControls.has(String(c.id))).length },
+      evidence: evidenceFiles.length,
+      open: { findings: openFindings.length, accepted_risks: acceptedRisks.length, dsr: openDsr.length }
+    }, null, 2))
+    return
+  }
+
+  const L = []
+  if (problems) {
+    L.push(`# Готовность к внешнему аудиту — ДАННЫЕ НЕСОГЛАСОВАНЫ`)
+    L.push(``)
+    L.push(`Показывать этот отчёт нельзя: проверка нашла ${problems} проблем.`)
+    L.push(`Реестры противоречат правилам, и внешний аудит найдёт то же самое.`)
+    L.push(``)
+    for (const row of rows) for (const b of row.bad) L.push(`- ${b}`)
+    L.push(``)
+    L.push(`Устранить: \`tools/harness check\``)
+    process.stdout.write(L.join('\n') + '\n')
+    process.exit(1)
+  }
+  L.push(`# Готовность к внешнему аудиту`)
+  L.push(``)
+  L.push(`Составлено: ${today}. Документ собирается из реестров командой \`tools/harness report\` —`)
+  L.push(`не редактируется руками: любая правка разойдётся с данными при следующем запуске.`)
+  L.push(``)
+
+  L.push(`## Что есть`)
+  L.push(``)
+  L.push(`| Реестр | Записей |`)
+  L.push(`|---|---:|`)
+  for (const [id, r] of Object.entries(registers)) L.push(`| ${r.title || id} | ${data[id].length} |`)
+  L.push(`| Файлов доказательств | ${evidenceFiles.length} |`)
+  L.push(``)
+
+  const risky = find('systems').filter((x) => String(x.risk_class) === 'high')
+  L.push(`## Как обстоит дело с риском`)
+  L.push(``)
+  L.push(`- Систем всего: **${find('systems').length}**, из них высокого риска: **${risky.length}**`)
+  L.push(`- Рисков в реестре: **${find('risks').length}**`)
+  L.push(`- Мер: **${controls.length}**, из них проверяется аудитом: **${controls.filter((c) => testedControls.has(String(c.id))).length}**`)
+  L.push(`- Мер с доказательством: **${controls.filter((c) => !isEmpty(c.evidence)).length}**`)
+  L.push(``)
+
+  L.push(`## Открытые вопросы`)
+  L.push(``)
+  if (!openFindings.length && !acceptedRisks.length && !openDsr.length) {
+    L.push(`Открытых пунктов нет.`)
+  } else {
+    if (openFindings.length) {
+      L.push(`**Находки в работе** — ${openFindings.length}:`)
+      L.push(``)
+      L.push(`| Находка | Важность | Срок | Ответственный |`)
+      L.push(`|---|---|---|---|`)
+      for (const f of openFindings) L.push(`| ${f.title} | ${f.severity} | ${f.due} | ${f.verifier} |`)
+      L.push(``)
+    }
+    if (acceptedRisks.length) {
+      L.push(`**Риски, принятые осознанно** — ${acceptedRisks.length}. Это не пробел, а решение;`)
+      L.push(`но аудитор спросит, кто его принял и почему:`)
+      L.push(``)
+      for (const r of acceptedRisks) L.push(`- **${r.title}** (остаточный: ${r.residual}) — принял ${r.accepted_by}: ${r.acceptance_reason}`)
+      L.push(``)
+    }
+    if (openDsr.length) {
+      L.push(`**Запросы субъектов в работе** — ${openDsr.length}:`)
+      L.push(``)
+      for (const d of openDsr) L.push(`- ${d.id} (${d.kind}), срок ${d.deadline}, статус ${d.status}`)
+      L.push(``)
+    }
+  }
+
+  L.push(`## Чем подтверждается`)
+  L.push(``)
+  L.push(`| Документ |`)
+  L.push(`|---|`)
+  for (const f of evidenceFiles.sort()) L.push(`| \`assurance/evidence/${f}\` |`)
+  L.push(``)
+
+  L.push(`## Чего нет`)
+  L.push(``)
+  const withRecords = Object.entries(registers).filter(([id]) => data[id].length > 0)
+  const emptyRegs = Object.entries(registers).filter(([id]) => data[id].length === 0)
+  L.push(`Раздел существует, чтобы его не пришлось вытягивать из вас на аудите.`)
+  L.push(``)
+  if (emptyRegs.length) for (const [id, r] of emptyRegs) L.push(`- **${r.title || id}** — реестр пуст`)
+  const untested = controls.filter((c) => !testedControls.has(String(c.id)))
+  if (untested.length) for (const c of untested) L.push(`- Мера «${c.title}» не проверяется ни одной процедурой аудита`)
+  L.push(`- Проверка не оценивает честность данных: она подтверждает полноту и связи, а не правдивость`)
+  L.push(`- Отчёт не заменяет правовую оценку: классификация и основания проверяются человеком`)
+  L.push(``)
+  L.push(`Проверить целостность перед показом: \`tools/harness check\``)
+
+  process.stdout.write(L.join('\n') + '\n')
+}
+
 // ─── Вход ───────────────────────────────────────────────────────────────────
 const [, , cmd = 'help', ...rest] = process.argv
 const includeCandidates = rest.includes('--candidates')
@@ -1407,6 +1564,7 @@ switch (cmd) {
   case 'entrypoint': cmdEntrypoint(man, rest.includes('--write')); break
   case 'capabilities': cmdCapabilities(); break
   case 'eval': cmdEval(man, rest.find((a) => !a.startsWith('--')), { dryRun: rest.includes('--dry-run') }); break
+  case 'report': cmdReport(man, rest.includes('--json')); break
   case 'check': cmdCheck(man, rest.find((a) => !a.startsWith('--'))); break
   case 'verify': cmdVerify(man); break
   case 'scan': cmdScan(man, target, rest.includes('--docs')); break
@@ -1433,6 +1591,7 @@ switch (cmd) {
   harness entrypoint [--write]   точка входа ядра для файла инструкций
   harness capabilities           маршрут: что умеет обвязка, когда и как вызвать
   harness eval [цель]            прогнать атаки по цели из security/targets.yaml
+  harness report [--json]        отчёт о готовности к аудиту, собранный из реестров
   harness check [реестр]         проверить реестры assurance по правилам
   harness verify                 самопроверка перед публикацией: секреты, пути, ссылки
   harness scan <каталог>         разведка: какие скиллы можно перенести
