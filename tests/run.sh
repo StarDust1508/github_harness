@@ -310,7 +310,38 @@ PYEOF
 if "$HARNESS" report >/dev/null 2>&1; then bad "отчёт собран из сломанных данных"; else ok "отчёт отказался собираться из сломанных данных"; fi
 cp "$SANDBOX/ctl.bak" "$REPO/assurance/registers/controls.yaml"
 
-head_ "22. Расхождение раскладки с манифестом ловится"
+head_ "22. Политика без меры — украшение, и это видно"
+if "$HARNESS" check policies >/dev/null 2>&1; then ok "реестр политик целостен"; else bad "реестр политик не проходит проверку"; fi
+# Политика, которую не реализует ни одна мера.
+cp "$REPO/assurance/registers/policies.yaml" "$SANDBOX/pol.bak"
+python3 - "$REPO/assurance/registers/policies.yaml" <<'PYEOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8")
+t = t.replace("  - id: pol-incident-response", """  - id: pol-orphan
+    title: Политика без применения
+    requirement: Требование, которое ничем не реализовано
+    owner: Compliance Lead
+    approved: 2026-09-01
+    next_review: 2027-09-01
+    scope: ничего
+    addresses:
+      - risk-bot-pii
+    evidence: assurance/evidence/pol-ai-governance.md
+
+  - id: pol-incident-response""", 1)
+p.write_text(t, encoding="utf-8")
+PYEOF
+if "$HARNESS" check policies 2>&1 | grep -q "ни одна мера не реализует"; then ok "политика без меры обнаружена"; else bad "политика без меры не обнаружена"; fi
+cp "$SANDBOX/pol.bak" "$REPO/assurance/registers/policies.yaml"
+# Ссылка политики на несуществующий риск.
+cp "$REPO/assurance/registers/policies.yaml" "$SANDBOX/pol2.bak"
+sed -i '' 's/      - risk-access-excess/      - risk-нет/' "$REPO/assurance/registers/policies.yaml" 2>/dev/null || \
+  sed -i 's/      - risk-access-excess/      - risk-нет/' "$REPO/assurance/registers/policies.yaml"
+if "$HARNESS" check policies 2>&1 | grep -q "addresses» ссылается на несуществующее"; then ok "потерянная ссылка в списке рисков обнаружена"; else bad "потерянная ссылка не обнаружена"; fi
+cp "$SANDBOX/pol2.bak" "$REPO/assurance/registers/policies.yaml"
+
+head_ "23. Расхождение раскладки с манифестом ловится"
 # Манифест обещает, что каталог скиллов DeepSeek Harness плоский. Положим туда
 # вложенный скилл — doctor обязан предупредить, что flat его не увидит.
 mkdir -p "$HOME/.dsh/skills/вложенный/скилл"

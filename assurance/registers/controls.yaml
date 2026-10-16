@@ -8,17 +8,34 @@ controls:
   - id: ctl-cv-bias-testing
     title: Тестирование на смещение по защищённым признакам
     risk: risk-cv-bias
+    policy: pol-ai-governance
     owner: Head of People
     evidence: assurance/evidence/ctl-cv-bias-testing.md
 
   - id: ctl-injection-filter
     title: Фильтрация ввода и разделение инструкций и данных
     risk: risk-bot-injection
+    policy: pol-ai-governance
     owner: Security Lead
     evidence: assurance/evidence/ctl-injection-filter.md
 
   - id: ctl-log-redaction
     title: Обезличивание персональных данных перед записью в журнал
     risk: risk-bot-pii
+    policy: pol-data-protection
     owner: Security Lead
     evidence: assurance/evidence/ctl-log-redaction.md
+
+  - id: ctl-access-review
+    title: Ежеквартальный пересмотр прав доступа
+    risk: risk-access-excess
+    policy: pol-access-control
+    owner: Security Lead
+    evidence: assurance/evidence/ctl-access-review.md
+
+  - id: ctl-incident-drill
+    title: Учения по реагированию на инциденты
+    risk: risk-incident-delay
+    policy: pol-incident-response
+    owner: Security Lead
+    evidence: assurance/evidence/ctl-incident-drill.md

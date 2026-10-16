@@ -1,0 +1,62 @@
+# Реестр политик.
+#
+# Политика — это документ, но проверяется не текст, а её СВЯЗИ. Политика,
+# которая ни на что не опирается и ничем не реализована, существует
+# в вакууме: её нельзя ни применить, ни проверить.
+#
+# Что проверяется:
+#   - каждое требование политики опирается на норму или решение (requirement);
+#   - политика закрывает конкретные риски (addresses) — ссылки существуют;
+#   - у политики есть утверждение и срок пересмотра (evidence, next_review);
+#   - политика, которую не реализует НИ ОДНА мера, — украшение. Это самая
+#     частая форма «бумажной» системы управления.
+#
+# Тексты политик лежат в assurance/policies/ и пишутся по шаблону
+# assurance/templates/policy.md. Здесь — только то, что можно проверить.
+
+policies:
+  - id: pol-ai-governance
+    title: Управление ИИ-системами
+    requirement: Внутреннее требование к системам, влияющим на решения о людях; опирается на классификацию по AI Act
+    owner: Compliance Lead
+    approved: 2026-09-01
+    next_review: 2027-09-01
+    scope: все ИИ-системы организации
+    addresses:
+      - risk-cv-bias
+      - risk-bot-injection
+    evidence: assurance/evidence/pol-ai-governance.md
+
+  - id: pol-data-protection
+    title: Защита персональных данных
+    requirement: Требования законодательства о персональных данных и договорные обязательства перед клиентами
+    owner: Privacy Lead
+    approved: 2026-09-01
+    next_review: 2027-09-01
+    scope: все операции обработки персональных данных
+    addresses:
+      - risk-bot-pii
+      - risk-access-excess
+    evidence: assurance/evidence/pol-data-protection.md
+
+  - id: pol-access-control
+    title: Управление доступом
+    requirement: Принцип минимально необходимого доступа; требование прослеживаемости доступа к персональным данным
+    owner: Security Lead
+    approved: 2026-09-01
+    next_review: 2027-09-01
+    scope: все информационные системы
+    addresses:
+      - risk-access-excess
+    evidence: assurance/evidence/pol-access-control.md
+
+  - id: pol-incident-response
+    title: Реагирование на инциденты
+    requirement: Обязанность уведомления затронутых сторон и регулятора в установленные сроки
+    owner: Security Lead
+    approved: 2026-09-01
+    next_review: 2027-09-01
+    scope: инциденты безопасности и нарушения защиты данных
+    addresses:
+      - risk-incident-delay
+    evidence: assurance/evidence/pol-incident-response.md

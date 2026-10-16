@@ -97,6 +97,22 @@ program:
     verifies: ans-dsr-process
     frequency: quarterly
 
+  - id: au-access-review-audit
+    area: Доступ
+    objective: Убедиться, что права пересматриваются и избыточные снимаются
+    how: Взять отчёт последнего пересмотра; проверить, что снятые права действительно закрыты и новых избыточных не появилось
+    evidence_expected: отчёт пересмотра прав с перечнем снятых
+    verifies: ctl-access-review
+    frequency: quarterly
+
+  - id: au-incident-drill-audit
+    area: Реагирование
+    objective: Подтвердить, что учения проводятся и выявленные недостатки устраняются
+    how: Проверить дату и разбор последних учений; убедиться, что выявленные недостатки стали находками со сроком
+    evidence_expected: протокол учений и перечень выявленных недостатков
+    verifies: ctl-incident-drill
+    frequency: semiannual
+
   - id: au-incident-drill
     area: Реагирование
     objective: Убедиться, что порядок реагирования существует и применим

@@ -1186,6 +1186,17 @@ function validateRegisters(rules, only) {
               bad.push(`${where}: «${chk.field}» ссылается на несуществующее «${target}» (искали в: ${known.join(', ')})`)
             }
           }
+        } else if (chk.kind === 'ref_each') {
+          // Ссылка-список: каждая запись должна существовать. Нужна там, где
+          // одна политика закрывает несколько рисков, и потеря одной ссылки
+          // не должна проходить незамеченной.
+          const list = [].concat(row[chk.field] === undefined ? [] : row[chk.field])
+          for (const v of list) {
+            if (isEmpty(v)) continue
+            const target = String(v)
+            if (!ids[chk.register]) bad.push(`${where}: ссылка на неизвестный реестр «${chk.register}»`)
+            else if (!ids[chk.register].has(target)) bad.push(`${where}: «${chk.field}» ссылается на несуществующее «${target}»`)
+          }
         } else if (chk.kind === 'covered_by') {
           // Покрытие: запись обязана кем-то проверяться. Мера, которую не
           // проверяет ни одна процедура аудита, существует только на бумаге —
@@ -1193,7 +1204,13 @@ function validateRegisters(rules, only) {
           // что она есть.
           const covering = data[chk.register] || []
           const seen = covering.some((r) => String(r[chk.field]) === String(row.id))
-          if (!seen) bad.push(`${where}: не проверяется ни одной процедурой аудита (нет ссылки в ${chk.register}.${chk.field})`)
+          // Текст находки задаётся правилом: «не проверяется аудитом» для меры
+          // и «ничем не реализована» для политики — разные вещи, и общая
+          // формулировка вводила бы в заблуждение.
+          if (!seen) {
+            const why = chk.reason || `нет ссылки в ${chk.register}.${chk.field}`
+            bad.push(`${where}: ${why}`)
+          }
         } else if (chk.kind === 'evidence') {
           // Поле обязательно: «да, мы это делаем» без ссылки на доказательство —
           // обещание, а не ответ. Пропуск пустого поля здесь был дырой:

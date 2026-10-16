@@ -121,6 +121,7 @@ registers:
       - id
       - title
       - risk
+      - policy
       - owner
       - evidence
     checks:
@@ -130,10 +131,16 @@ registers:
       # Мера без доказательства — это намерение, а не мера.
       - kind: evidence
         field: evidence
+      # Каждая мера опирается на политику: мера без основания — самодеятельность,
+      # которая исчезнет при смене человека.
+      - kind: ref
+        field: policy
+        register: policies
       # Мера, которую не проверяет ни одна процедура, существует на бумаге.
       - kind: covered_by
         register: audit-program
         field: verifies
+        reason: не проверяется ни одной процедурой аудита
 
   # ── Ответы на security-вопросники ────────────────────────────────────────
   #
@@ -183,6 +190,35 @@ registers:
         register: answers
 
   # ── Приватность ──────────────────────────────────────────────────────────
+  policies:
+    title: Реестр политик
+    file: assurance/registers/policies.yaml
+    require:
+      - id
+      - title
+      - requirement
+      - owner
+      - approved
+      - next_review
+      - scope
+      - addresses
+      - evidence
+    checks:
+      # Каждая ссылка списка: потеря одного риска не должна проходить незамеченной.
+      - kind: ref_each
+        field: addresses
+        register: risks
+      - kind: evidence
+        field: evidence
+      - kind: not_past
+        field: next_review
+      # Политика, которую не реализует ни одна мера, — украшение. Это самая
+      # частая форма бумажной системы управления: документ есть, применения нет.
+      - kind: covered_by
+        register: controls
+        field: policy
+        reason: ни одна мера не реализует эту политику — документ без применения
+
   processing:
     title: Реестр обработки персональных данных
     file: assurance/registers/processing.yaml

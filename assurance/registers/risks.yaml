@@ -43,3 +43,23 @@ risks:
     treatment: mitigate
     residual: low
     next_review: 2026-12-01
+
+  - id: risk-access-excess
+    title: Избыточные права доступа к персональным данным
+    system: sys-support-bot
+    owner: Security Lead
+    likelihood: medium
+    impact: medium
+    treatment: mitigate
+    residual: low
+    next_review: 2026-12-01
+
+  - id: risk-incident-delay
+    title: Инцидент не обнаружен и не локализован вовремя
+    system: sys-support-bot
+    owner: Security Lead
+    likelihood: low
+    impact: high
+    treatment: mitigate
+    residual: low
+    next_review: 2026-12-01
