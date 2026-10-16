@@ -262,7 +262,29 @@ PYEOF
 if "$HARNESS" check risks 2>&1 | grep -q "обязательно «accepted_by»"; then ok "риск без принятия обнаружен"; else bad "риск без принятия не обнаружен"; fi
 cp "$SANDBOX/risks2.bak" "$REPO/assurance/registers/risks.yaml"
 
-head_ "20. Расхождение раскладки с манифестом ловится"
+head_ "20. Приватность: основания, сроки, права субъектов"
+if "$HARNESS" check processing >/dev/null 2>&1; then ok "реестр обработки целостен"; else bad "реестр обработки не проходит проверку"; fi
+# Передача за границу без основания.
+cp "$REPO/assurance/registers/processing.yaml" "$SANDBOX/proc.bak"
+sed -i '' '/transfer_basis: стандартные/d' "$REPO/assurance/registers/processing.yaml" 2>/dev/null || \
+  sed -i '/transfer_basis: стандартные/d' "$REPO/assurance/registers/processing.yaml"
+if "$HARNESS" check processing 2>&1 | grep -q "обязательно «transfer_basis»"; then ok "передача за границу без основания обнаружена"; else bad "передача без основания не обнаружена"; fi
+cp "$SANDBOX/proc.bak" "$REPO/assurance/registers/processing.yaml"
+# Просроченный незакрытый запрос субъекта.
+cp "$REPO/assurance/registers/dsr.yaml" "$SANDBOX/dsr.bak"
+python3 - "$REPO/assurance/registers/dsr.yaml" <<'PYEOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8")
+t = t.replace("    deadline: 2026-10-31", "    deadline: 2026-08-31", 1)
+p.write_text(t, encoding="utf-8")
+PYEOF
+if "$HARNESS" check dsr 2>&1 | grep -q "срок прошёл"; then ok "просроченный запрос обнаружен"; else bad "просроченный запрос не обнаружен"; fi
+cp "$SANDBOX/dsr.bak" "$REPO/assurance/registers/dsr.yaml"
+# Закрытый запрос с прошедшим сроком нарушением не является.
+if "$HARNESS" check dsr 2>&1 | grep -q "dsr-2026-02"; then bad "закрытый запрос ошибочно признан просроченным"; else ok "закрытый запрос не считается просроченным"; fi
+
+head_ "21. Расхождение раскладки с манифестом ловится"
 # Манифест обещает, что каталог скиллов DeepSeek Harness плоский. Положим туда
 # вложенный скилл — doctor обязан предупредить, что flat его не увидит.
 mkdir -p "$HOME/.dsh/skills/вложенный/скилл"

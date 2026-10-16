@@ -1,0 +1,94 @@
+# Реестр обработки персональных данных (ROPA).
+#
+# Это ПРИМЕР. Замените на свои операции.
+#
+# Реестр отвечает на вопросы, которые задаёт и регулятор, и клиент:
+#   зачем обрабатываем → purpose
+#   на каком основании    → legal_basis
+#   какие данные          → data_categories
+#   чьи данные            → subjects
+#   кому передаём         → recipients
+#   сколько храним        → retention_period, retention_days
+#   не за границу ли      → transfer_outside, transfer_basis
+#
+# Поле system необязательно: операция может не быть связана с ИИ-системой.
+# Заполнено — проверка сверит, что система есть в реестре ИИ-систем.
+#
+# Срок хранения обязателен. Категория данных без срока — это данные,
+# которые хранятся вечно: самая частая находка и самое дешёвое нарушение
+# для обнаружения.
+#
+# Правовая квалификация основания — работа владельца (юридическая
+# квалификация), здесь зафиксирована структура и полнота записи.
+
+processing:
+  - id: proc-cv-screening
+    title: Отбор кандидатов
+    system: sys-cv-screening
+    purpose: Оценка соответствия кандидата требованиям вакансии
+    legal_basis: legitimate_interests
+    data_categories:
+      - идентификационные
+      - профессиональные
+      - контактные
+    subjects: соискатели
+    recipients:
+      - кадровая служба
+    retention_period: 6 месяцев после завершения отбора
+    retention_days: 180
+    transfer_outside: none
+    owner: Head of People
+    next_review: 2027-03-01
+
+  - id: proc-support-chat
+    title: Поддержка клиентов
+    system: sys-support-bot
+    purpose: Ответы на обращения клиентов и ведение истории обращений
+    legal_basis: contract
+    data_categories:
+      - контактные
+      - сведения об обращениях
+    subjects: клиенты
+    recipients:
+      - служба поддержки
+    retention_period: 3 года с момента последнего обращения
+    retention_days: 1095
+    transfer_outside: none
+    owner: Head of Support
+    next_review: 2027-03-01
+
+  - id: proc-employee-records
+    title: Кадровый учёт
+    purpose: Ведение трудовых отношений и исполнение обязанностей работодателя
+    legal_basis: legal_obligation
+    data_categories:
+      - идентификационные
+      - контактные
+      - сведения о доходах
+      - сведения о здоровье
+    subjects: работники
+    recipients:
+      - бухгалтерия
+      - пенсионный фонд
+    retention_period: 50 лет после увольнения
+    retention_days: 18250
+    transfer_outside: none
+    owner: Head of People
+    next_review: 2027-06-01
+
+  - id: proc-marketing
+    title: Информационные рассылки
+    purpose: Направление информационных материалов подписчикам
+    legal_basis: consent
+    data_categories:
+      - контактные
+    subjects: подписчики
+    recipients:
+      - служба маркетинга
+      - внешний сервис рассылок
+    retention_period: до отзыва согласия
+    retention_days: 0
+    transfer_outside: third_country
+    transfer_basis: стандартные договорные условия с сервисом рассылок
+    owner: Head of Marketing
+    next_review: 2027-01-01

@@ -1197,7 +1197,11 @@ function cmdCheck(man, only) {
           }
         } else if (chk.kind === 'not_past') {
           const v = row[chk.field]
-          if (!isEmpty(v) && String(v) < today()) bad.push(`${where}: «${chk.field}» = ${v} — срок прошёл`)
+          // Срок перестаёт иметь значение, когда вопрос закрыт: просроченный
+          // запрос субъекта, отвеченный в срок и закрытый, — не нарушение.
+          // unless_in выражает это без отдельного вида правила.
+          const skip = chk.unless_in && [].concat(chk.unless_in).map(String).includes(String(row[chk.other_field || 'status'] ?? ''))
+          if (!skip && !isEmpty(v) && String(v) < today()) bad.push(`${where}: «${chk.field}» = ${v} — срок прошёл`)
         } else {
           bad.push(`${where}: неизвестная конструкция правила «${chk.kind}»`)
         }
