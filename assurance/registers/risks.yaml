@@ -1,22 +1,35 @@
 # Реестр рисков.
 #
 # Каждый риск привязан к системе и имеет владельца, способ обработки,
-# остаточный уровень и дату пересмотра. Риск без владельца — не риск,
-# а наблюдение; риск без даты пересмотра — забытый риск.
+# остаточный уровень и дату пересмотра.
+#
+# likelihood и impact фиксируют ОЦЕНКУ по шкале из risk-appetite.yaml:
+# без них решение о уровне риска невозможно проверить, а через полгода
+# невозможно и понять. residual — уровень ПОСЛЕ обработки; он может быть
+# ниже исходного, и это нормально.
+#
+# Риск выше аппетита требует явного принятия: accepted_by и acceptance_reason.
+# Жить с риском можно, но это решение, у которого есть имя и причина.
 
 risks:
   - id: risk-cv-bias
     title: Смещение модели при скрининге резюме
     system: sys-cv-screening
     owner: Head of People
+    likelihood: medium
+    impact: high
     treatment: mitigate
     residual: medium
+    accepted_by: Head of People
+    acceptance_reason: Остаточный разрыв в доле отбора ниже порога политики; полное устранение требует смены модели и остановки найма на квартал — несоразмерно
     next_review: 2027-01-15
 
   - id: risk-bot-injection
     title: Подмена инструкций через пользовательский ввод
     system: sys-support-bot
     owner: Security Lead
+    likelihood: medium
+    impact: medium
     treatment: mitigate
     residual: low
     next_review: 2026-12-01
@@ -25,6 +38,8 @@ risks:
     title: Утечка персональных данных в журналы
     system: sys-support-bot
     owner: Security Lead
+    likelihood: medium
+    impact: medium
     treatment: mitigate
     residual: low
     next_review: 2026-12-01

@@ -1150,9 +1150,14 @@ function cmdCheck(man, only) {
       for (const chk of [].concat(r.checks || [])) {
         if (chk.kind === 'require_if') {
           const v = String(row[chk.field] ?? '')
-          if (v === String(chk.equals)) {
+          // Условие: одно значение (equals) либо набор (in). Набор нужен там,
+          // где правило одинаково для нескольких уровней — например, «любой
+          // риск выше аппетита требует явного принятия».
+          const values = chk.in ? [].concat(chk.in).map(String)
+            : chk.equals !== undefined ? [String(chk.equals)] : []
+          if (values.includes(v)) {
             for (const f of [].concat(chk.require || [])) {
-              if (isEmpty(row[f])) bad.push(`${where}: при ${chk.field}=${chk.equals} обязательно «${f}»`)
+              if (isEmpty(row[f])) bad.push(`${where}: при ${chk.field}=${v} обязательно «${f}»`)
             }
           }
         } else if (chk.kind === 'one_of') {

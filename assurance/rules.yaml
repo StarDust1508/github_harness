@@ -64,6 +64,8 @@ registers:
       - title
       - system
       - owner
+      - likelihood
+      - impact
       - treatment
       - residual
       - next_review
@@ -71,6 +73,20 @@ registers:
       - kind: ref
         field: system
         register: systems
+      # Оценка по шкале из risk-appetite.yaml. Без неё решение об уровне
+      # риска невозможно проверить, а через полгода — и понять.
+      - kind: one_of
+        field: likelihood
+        values:
+          - low
+          - medium
+          - high
+      - kind: one_of
+        field: impact
+        values:
+          - low
+          - medium
+          - high
       - kind: one_of
         field: treatment
         values:
@@ -86,6 +102,17 @@ registers:
           - high
       - kind: not_past
         field: next_review
+      # Жить с риском выше аппетита можно, но это РЕШЕНИЕ, и оно записано:
+      # у него есть имя и причина. Риск без принятия — не «принятый риск»,
+      # а забытый, и на внешнем аудите это находка.
+      - kind: require_if
+        field: residual
+        in:
+          - medium
+          - high
+        require:
+          - accepted_by
+          - acceptance_reason
 
   controls:
     title: Реестр мер и доказательств

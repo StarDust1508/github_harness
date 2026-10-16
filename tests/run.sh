@@ -247,7 +247,22 @@ sed -i '' 's/    test: au-log-redaction/    test: au-нет/' "$REPO/assurance/r
 if "$HARNESS" check findings 2>&1 | grep -q "ссылается на несуществующее"; then ok "находка без процедуры обнаружена"; else bad "находка без процедуры не обнаружена"; fi
 cp "$SANDBOX/find.bak" "$REPO/assurance/registers/findings.yaml"
 
-head_ "19. Расхождение раскладки с манифестом ловится"
+head_ "19. Риск выше аппетита требует явного принятия"
+if "$HARNESS" check risks >/dev/null 2>&1; then ok "реестр рисков целостен"; else bad "реестр рисков не проходит проверку"; fi
+cp "$REPO/assurance/registers/risks.yaml" "$SANDBOX/risks2.bak"
+# Убираем принятие у риска с остаточным уровнем выше аппетита.
+python3 - "$REPO/assurance/registers/risks.yaml" <<'PYEOF'
+import sys, pathlib, re
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8")
+t = re.sub(r"    accepted_by:.*\n", "", t, count=1)
+t = re.sub(r"    acceptance_reason:.*\n", "", t, count=1)
+p.write_text(t, encoding="utf-8")
+PYEOF
+if "$HARNESS" check risks 2>&1 | grep -q "обязательно «accepted_by»"; then ok "риск без принятия обнаружен"; else bad "риск без принятия не обнаружен"; fi
+cp "$SANDBOX/risks2.bak" "$REPO/assurance/registers/risks.yaml"
+
+head_ "20. Расхождение раскладки с манифестом ловится"
 # Манифест обещает, что каталог скиллов DeepSeek Harness плоский. Положим туда
 # вложенный скилл — doctor обязан предупредить, что flat его не увидит.
 mkdir -p "$HOME/.dsh/skills/вложенный/скилл"
