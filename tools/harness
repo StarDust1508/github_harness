@@ -414,6 +414,25 @@ function cmdDoctor(man) {
     console.log(`  ${exists ? `${C.g}✓${C.x}` : `${C.y}?${C.x}`} ${p}${exists ? '' : ' — ещё не создан'}`)
   }
 
+  // Маршрутизатор: возможность без условия применения агент не вызовет.
+  // Это та же болезнь, что у скиллов с описанием без «когда», поэтому и
+  // проверка та же.
+  const caps = loadCapabilities()
+  console.log(`\n${C.b}Маршрутизатор${C.x} (${caps.length})`)
+  const seen = new Set()
+  let capProblems = 0
+  for (const c of caps) {
+    const issues = []
+    if (!c.id) issues.push('нет id')
+    else if (seen.has(c.id)) issues.push(`повтор id «${c.id}»`)
+    else seen.add(c.id)
+    if (!c.purpose) issues.push('нет purpose — непонятно, что даёт на выходе')
+    if (!c.invoke) issues.push('нет invoke — непонятно, как вызвать')
+    if (![].concat(c.when || []).length) issues.push('нет when — агент не поймёт, когда звать')
+    if (issues.length) { console.log(`  ${C.y}!${C.x} ${c.id || '?'}: ${issues.join('; ')}`); warnings += issues.length; capProblems++ }
+  }
+  if (!capProblems) console.log(`  ${C.d}у каждой возможности есть цель, условие и способ вызова${C.x}`)
+
   // Адаптеры против реальности.
   //
   // Манифест — это утверждение о том, как устроены инструменты. Утверждение,
@@ -967,6 +986,15 @@ function cmdImportDoc(man, src, layer, dryRun) {
  * (у DeepSeek Harness — 64 КБ, при превышении широкие файлы отбрасываются).
  * Поэтому здесь только указатель: имя, назначение и куда идти за глубиной.
  */
+
+/** Реестр возможностей обвязки — маршрутизатор. */
+function loadCapabilities() {
+  const file = path.join(REPO, 'capabilities.yaml')
+  if (!fs.existsSync(file)) return []
+  const data = parseYaml(fs.readFileSync(file, 'utf8'))
+  return Array.isArray(data.capabilities) ? data.capabilities : []
+}
+
 function buildEntrypoint(man) {
   const coreDir = path.join(REPO, 'core')
   const readDir = (rel) => {
@@ -1001,6 +1029,14 @@ function buildEntrypoint(man) {
 
   const line = (x) => `- \`${x.name}\`${x.desc ? ` — ${x.desc.split('. ')[0].replace(/\.$/, '')}` : ''}`
 
+  // Маршрут возможностей. Берём только то, что предназначено агенту: список
+  // команд для человека в файле инструкций только занимает бюджет.
+  const caps = loadCapabilities().filter((c) => !c.audience || c.audience === 'agent')
+  const route = caps.map((c) => {
+    const when = [].concat(c.when || [])[0] || c.purpose || ''
+    return `| ${when} | \`${c.invoke}\` |`
+  }).join('\n')
+
   return `# Обвязка агента
 
 Ядро обвязки: \`${(() => {
@@ -1024,15 +1060,17 @@ ${knowledge.length ? knowledge.map(line).join('\n') : ''}
 
 Скиллы (\`core/skills/\`) инструмент подхватывает сам — их описания видны заранее.
 
-## Проверка состояния
+## Что умеет обвязка
 
-\`\`\`sh
-tools/harness doctor     # целостность ядра и ссылок
-tools/harness verify     # перед публикацией: секреты, пути, ссылки
-tools/session-stats      # что происходило в сессиях агента
-\`\`\`
+Возможность без условия применения равносильна её отсутствию. Поэтому —
+не список команд, а маршрут: слева признак задачи, справа что запустить.
 
-Указатель по слоям: \`core/README.md\`.
+| Когда | Что запустить |
+|---|---|
+${route}
+
+Полный маршрут с оговорками «не когда» — \`capabilities.yaml\`.
+Слои ядра: \`core/README.md\`. Реестры: \`assurance/README.md\`.
 `
 }
 
@@ -1157,6 +1195,23 @@ function cmdCheck(man, only) {
   console.log(`${C.g}Реестры целостны.${C.x}`)
 }
 
+
+/** Полный маршрут: все возможности, включая предназначенные человеку. */
+function cmdCapabilities() {
+  const caps = loadCapabilities()
+  console.log(`${C.b}Маршрутизатор обвязки${C.x} — возможностей ${caps.length}\n`)
+  for (const c of caps) {
+    const who = !c.audience || c.audience === 'agent' ? 'агент' : 'человек'
+    console.log(`${C.b}${c.id}${C.x} ${C.d}(${who})${C.x} — ${c.title || ''}`)
+    console.log(`  ${c.purpose || ''}`)
+    console.log(`  ${C.g}запуск${C.x}  ${c.invoke}`)
+    for (const w of [].concat(c.when || [])) console.log(`  ${C.g}когда${C.x}   ${w}`)
+    for (const w of [].concat(c.not_when || [])) console.log(`  ${C.y}не когда${C.x} ${w}`)
+    console.log('')
+  }
+  console.log(`${C.d}этот маршрут попадает агенту через tools/harness entrypoint${C.x}`)
+}
+
 // ─── Вход ───────────────────────────────────────────────────────────────────
 const [, , cmd = 'help', ...rest] = process.argv
 const includeCandidates = rest.includes('--candidates')
@@ -1173,6 +1228,7 @@ switch (cmd) {
   case 'inventory': cmdInventory(man); break
   case 'new': cmdNew(man, rest.find((a) => !a.startsWith('--'))); break
   case 'entrypoint': cmdEntrypoint(man, rest.includes('--write')); break
+  case 'capabilities': cmdCapabilities(); break
   case 'check': cmdCheck(man, rest.find((a) => !a.startsWith('--'))); break
   case 'verify': cmdVerify(man); break
   case 'scan': cmdScan(man, target, rest.includes('--docs')); break
@@ -1197,6 +1253,7 @@ switch (cmd) {
   harness inventory              машинный отчёт об установленном
   harness new <имя>              создать заготовку скилла из шаблона
   harness entrypoint [--write]   точка входа ядра для файла инструкций
+  harness capabilities           маршрут: что умеет обвязка, когда и как вызвать
   harness check [реестр]         проверить реестры assurance по правилам
   harness verify                 самопроверка перед публикацией: секреты, пути, ссылки
   harness scan <каталог>         разведка: какие скиллы можно перенести

@@ -165,7 +165,29 @@ cp "$REPO/assurance/registers/risks.yaml" "$SANDBOX/risks.bak"
 if "$HARNESS" check risks >/dev/null 2>&1; then bad "битая ссылка не найдена"; else ok "битая ссылка найдена"; fi
 cp "$SANDBOX/risks.bak" "$REPO/assurance/registers/risks.yaml"
 
-head_ "15. Расхождение раскладки с манифестом ловится"
+head_ "15. Маршрутизатор попадает агенту и проверяется"
+OUT=$("$HARNESS" entrypoint)
+case "$OUT" in
+  *"Что умеет обвязка"*) ok "маршрут есть в точке входа" ;;
+  *) bad "маршрута нет в точке входа" ;;
+esac
+case "$OUT" in
+  *"tools/harness check"*) ok "в маршруте есть вызовы, а не только названия" ;;
+  *) bad "вызовы в маршрут не попали" ;;
+esac
+# Возможность без условия применения должна быть видна проверке.
+cp "$REPO/capabilities.yaml" "$SANDBOX/caps.bak"
+python3 - "$REPO/capabilities.yaml" <<'PYEOF'
+import sys, pathlib, re
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8")
+t = re.sub(r"    when:\n(      - .*\n)+", "", t, count=1)
+p.write_text(t, encoding="utf-8")
+PYEOF
+if "$HARNESS" doctor 2>&1 | grep -q "нет when"; then ok "возможность без условия обнаружена"; else bad "возможность без условия не обнаружена"; fi
+cp "$SANDBOX/caps.bak" "$REPO/capabilities.yaml"
+
+head_ "16. Расхождение раскладки с манифестом ловится"
 # Манифест обещает, что каталог скиллов DeepSeek Harness плоский. Положим туда
 # вложенный скилл — doctor обязан предупредить, что flat его не увидит.
 mkdir -p "$HOME/.dsh/skills/вложенный/скилл"
