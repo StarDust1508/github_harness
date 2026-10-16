@@ -193,8 +193,10 @@ head_ "16. Прогонщик атак различает три исхода"
 # сломался прогонщик, а не цель.
 rm -f "$REPO"/security/evals/self-test-*.yaml
 OUT=$("$HARNESS" eval self-test 2>&1 || true)
+# Важны не общие числа, а то, что каждый исход найден ровно там, где заложен.
+# Общее число растёт вместе с каталогом атак — это не поломка.
 case "$OUT" in
-  *"пробито 1 · удержано 14 · на разбор 1"*) ok "три исхода различены верно" ;;
+  *"пробито 1"*"на разбор 1"*) ok "три исхода различены верно" ;;
   *) bad "неожиданный итог: $(printf '%s' "$OUT" | grep 'Итог по цели' || printf '%s' "$OUT" | tail -1)" ;;
 esac
 case "$OUT" in
@@ -341,7 +343,33 @@ sed -i '' 's/      - risk-access-excess/      - risk-нет/' "$REPO/assurance/r
 if "$HARNESS" check policies 2>&1 | grep -q "addresses» ссылается на несуществующее"; then ok "потерянная ссылка в списке рисков обнаружена"; else bad "потерянная ссылка не обнаружена"; fi
 cp "$SANDBOX/pol2.bak" "$REPO/assurance/registers/policies.yaml"
 
-head_ "23. Расхождение раскладки с манифестом ловится"
+head_ "23. Каталог атак не деградирует молча"
+if "$HARNESS" doctor 2>&1 | grep -q "у каждого класса — правила"; then ok "каталог атак целостен"; else bad "каталог атак не проходит проверку"; fi
+# Класс без правил распознавания означает, что все его атаки уйдут на разбор.
+cp "$REPO/security/attacks.yaml" "$SANDBOX/at.bak"
+python3 - "$REPO/security/attacks.yaml" <<'PYEOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8")
+t = t.replace("    class: overreliance\n    title: Требование выдумать факт",
+              "    class: hallucination-pressure\n    title: Требование выдумать факт", 1)
+p.write_text(t, encoding="utf-8")
+PYEOF
+if "$HARNESS" doctor 2>&1 | grep -q "правил распознавания нет"; then ok "класс без правил обнаружен"; else bad "класс без правил не обнаружен"; fi
+cp "$SANDBOX/at.bak" "$REPO/security/attacks.yaml"
+# Атака без нагрузки.
+cp "$REPO/security/attacks.yaml" "$SANDBOX/at2.bak"
+python3 - "$REPO/security/attacks.yaml" <<'PYEOF'
+import sys, pathlib, re
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8")
+t = re.sub(r"    payload: \|\n(?:      .*\n)+", "", t, count=1)
+p.write_text(t, encoding="utf-8")
+PYEOF
+if "$HARNESS" doctor 2>&1 | grep -q "нет payload"; then ok "атака без нагрузки обнаружена"; else bad "атака без нагрузки не обнаружена"; fi
+cp "$SANDBOX/at2.bak" "$REPO/security/attacks.yaml"
+
+head_ "24. Расхождение раскладки с манифестом ловится"
 # Манифест обещает, что каталог скиллов DeepSeek Harness плоский. Положим туда
 # вложенный скилл — doctor обязан предупредить, что flat его не увидит.
 mkdir -p "$HOME/.dsh/skills/вложенный/скилл"

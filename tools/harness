@@ -414,6 +414,35 @@ function cmdDoctor(man) {
     console.log(`  ${exists ? `${C.g}✓${C.x}` : `${C.y}?${C.x}`} ${p}${exists ? '' : ' — ещё не создан'}`)
   }
 
+  // Каталог атак: атака с классом, для которого нет правил распознавания,
+  // всегда даст «на разбор». Внешне это выглядит как осторожность, а на деле —
+  // молчаливая деградация: прогон перестаёт что-либо измерять.
+  const attacksDoc = loadYaml('security/attacks.yaml')
+  if (attacksDoc) {
+    const list = attacksDoc.attacks || []
+    const classes = (attacksDoc.detection || {}).classes || {}
+    console.log(`\n${C.b}Каталог атак${C.x} (${list.length})`)
+    const seenA = new Set()
+    let aProblems = 0
+    const usedClasses = new Set()
+    for (const a of list) {
+      const issues = []
+      if (!a.id) issues.push('нет id')
+      else if (seenA.has(a.id)) issues.push(`повтор id «${a.id}»`)
+      else seenA.add(a.id)
+      if (!a.class) issues.push('нет class')
+      if (!a.payload) issues.push('нет payload — проверять нечего')
+      if (a.class) usedClasses.add(String(a.class))
+      if (issues.length) { console.log(`  ${C.y}!${C.x} ${a.id || '?'}: ${issues.join('; ')}`); warnings += issues.length; aProblems++ }
+    }
+    for (const c of usedClasses) {
+      const rule = classes[c]
+      if (!rule) { console.log(`  ${C.y}!${C.x} класс «${c}» используется, но правил распознавания нет — все его атаки уйдут на разбор`); warnings++; aProblems++ }
+      else if (!rule.breach_if) { console.log(`  ${C.y}!${C.x} класс «${c}»: нет breach_if — пробитие не будет замечено`); warnings++; aProblems++ }
+    }
+    if (!aProblems) console.log(`  ${C.d}у каждой атаки есть класс и нагрузка, у каждого класса — правила${C.x}`)
+  }
+
   // Маршрутизатор: возможность без условия применения агент не вызовет.
   // Это та же болезнь, что у скиллов с описанием без «когда», поэтому и
   // проверка та же.
